@@ -1,6 +1,6 @@
 # DataX PRD
 
-**Version**: 1.0
+**Version**: 1.1
 **Author**: Stephen Sequenzia
 **Date**: 2026-03-11
 **Status**: Draft
@@ -85,6 +85,7 @@ DataX addresses a growing market need for AI-native analytics tools. By making d
 - **Goals**: Get answers to business questions without filing tickets to the data team, understand trends in their department's metrics
 - **Pain Points**: Depends on data team for every query, doesn't understand SQL or BI tool configuration, feels disconnected from company data
 - **Context**: Needs quick answers during meetings or while making decisions, prefers natural language interaction
+- **Technical Proficiency**: Low — no SQL or programming experience, comfortable with spreadsheets and web applications
 
 ### 4.2 User Journey Map
 
@@ -355,7 +356,7 @@ flowchart TD
 - [ ] Query history with search
 - [ ] Saved queries with naming and organization
 - [ ] EXPLAIN plan viewer for query optimization
-- [ ] Result formatting (table view with sorting, filtering, export)
+- [ ] Result formatting (table view with sorting, filtering, CSV export of visible results)
 - [ ] Keyboard shortcuts (Cmd/Ctrl+Enter to run, Cmd/Ctrl+S to save, etc.)
 - [ ] Query results appear in the results panel as stacked cards
 - [ ] Queries run through the same safety layer (read-only by default, time limits, EXPLAIN review)
@@ -364,6 +365,22 @@ flowchart TD
 - Use a code editor component (e.g., CodeMirror 6 or Monaco Editor) with SQL language support
 - Autocomplete pulls from the schema registry for context-aware suggestions
 - Query history stored in PostgreSQL
+
+**Edge Cases**:
+| Scenario | Input | Expected Behavior |
+|----------|-------|-------------------|
+| Very long query | SQL exceeding 10,000 characters | Accept and execute; editor scrolls horizontally |
+| Invalid SQL syntax | Malformed SQL statement | Highlight syntax errors in editor; show parse error on execution |
+| Query returns no rows | Valid SQL with empty result set | Show empty table with "No results" message |
+| Concurrent tab execution | Multiple tabs running queries simultaneously | Execute independently; show loading state per tab |
+| Autocomplete on empty schema | No data sources connected | Show SQL keywords only; indicate no schema available |
+
+**Error Handling**:
+| Error Condition | User Message | System Action |
+|-----------------|--------------|---------------|
+| Query timeout | "Query exceeded the time limit. Consider adding filters or LIMIT." | Cancel query execution |
+| Connection lost mid-query | "Connection to data source was lost. Please retry." | Clean up query state, offer retry |
+| Syntax error | "SQL syntax error: [details]" | Highlight error location in editor |
 
 ---
 
@@ -383,6 +400,25 @@ flowchart TD
 - [ ] Conversation history is browsable and searchable
 - [ ] Saved visualizations can be viewed, re-run, or deleted
 - [ ] Dashboard is accessible from the sidebar navigation
+
+**Technical Notes**:
+- Dashboard is the default landing page after onboarding is complete
+- Dataset and connection cards use real-time status from backend polling (30s interval)
+- Conversation list supports infinite scroll with cursor-based pagination
+
+**Edge Cases**:
+| Scenario | Input | Expected Behavior |
+|----------|-------|-------------------|
+| No data sources | First-time user with nothing uploaded | Show empty state with call-to-action to upload data or connect a database |
+| Many datasets | 100+ uploaded files | Paginated list with search and sort |
+| Connection goes offline | Database becomes unreachable | Show error status on connection card with "Test Connection" action |
+| Deleted source with saved queries | Data source removed but saved queries reference it | Mark affected saved queries with warning indicator |
+
+**Error Handling**:
+| Error Condition | User Message | System Action |
+|-----------------|--------------|---------------|
+| Failed to load dashboard data | "Could not load your data. Please refresh." | Retry with exponential backoff, show cached data if available |
+| Dataset deletion fails | "Could not delete dataset. It may be in use." | Prevent deletion, show which conversations reference it |
 
 ---
 
@@ -453,6 +489,21 @@ flowchart TD
 - [ ] Wizard can be dismissed and re-accessed from settings
 - [ ] Each step has contextual guidance and examples
 
+**Technical Notes**:
+- Wizard state stored in browser localStorage to track completion
+- Re-triggerable from Settings page
+
+**Edge Cases**:
+| Scenario | Input | Expected Behavior |
+|----------|-------|-------------------|
+| User dismisses mid-step | Closes wizard at step 2 | Resume from last incomplete step on next visit |
+| No AI provider configured | Reaches "Ask your first question" without provider | Prompt to configure an AI provider first |
+
+**Error Handling**:
+| Error Condition | User Message | System Action |
+|-----------------|--------------|---------------|
+| Sample query fails during onboarding | "Something went wrong. You can try again or skip this step." | Allow skip, log error |
+
 ---
 
 ### 5.11 Feature: Settings
@@ -472,6 +523,24 @@ flowchart TD
 - [ ] Data storage path configuration (for self-hosted)
 - [ ] Re-trigger onboarding wizard
 
+**Technical Notes**:
+- Settings are persisted in PostgreSQL (provider configs, connections) and browser localStorage (theme preference)
+- API key input fields use password-type masking; keys are encrypted before storage
+- Environment variable overrides are indicated in the UI (e.g., "Set via environment variable" badge)
+
+**Edge Cases**:
+| Scenario | Input | Expected Behavior |
+|----------|-------|-------------------|
+| Invalid API key | User enters malformed key | Show validation error before saving |
+| Env var override active | API key set via `DATAX_OPENAI_API_KEY` | Show key as read-only with "Set via environment variable" indicator |
+| Encryption key rotation | `DATAX_ENCRYPTION_KEY` changes | Existing encrypted values become unreadable; show error prompting re-entry |
+
+**Error Handling**:
+| Error Condition | User Message | System Action |
+|-----------------|--------------|---------------|
+| Provider validation fails | "Could not validate API key. Please check the key and try again." | Do not save; show provider-specific error details |
+| Storage path not writable | "The configured storage path is not writable." | Reject change, keep previous path |
+
 ## 6. Non-Functional Requirements
 
 ### 6.1 Performance Requirements
@@ -489,7 +558,7 @@ flowchart TD
 
 #### Authentication
 - MVP is single-user mode — no authentication required
-- Design data models with a `user_id` field to support multi-user in the future without migration
+- Add a `user_id` UUID NULLABLE field to Dataset, Connection, Conversation, SavedQuery, and ProviderConfig entities, with a note that it defaults to NULL in single-user MVP mode
 
 #### Data Protection
 - **Encryption at rest**: API keys encrypted using Fernet symmetric encryption with server-side master key
@@ -597,7 +666,7 @@ flowchart TD
 | Database ORM | SQLAlchemy | Database abstraction for app state and user database proxying |
 | App Database | PostgreSQL | Full-featured RDBMS for persistent application state |
 | Package Mgmt (Python) | UV | Fast Python package manager |
-| Package Mgmt (JS) | npm or pnpm | Standard JS package management |
+| Package Mgmt (JS) | pnpm | Fast, disk-efficient package manager with strict dependency resolution |
 | Containerization | Docker + Kubernetes | Docker images with k8s manifests for flexible deployment |
 
 ### 7.3 Data Models
@@ -608,6 +677,7 @@ flowchart TD
 classDiagram
     class Dataset {
         +UUID id PK
+        +UUID user_id FK
         +string name
         +string file_path
         +string file_format
@@ -624,6 +694,7 @@ classDiagram
 | Field | Type | Constraints | Description |
 |-------|------|-------------|-------------|
 | id | UUID | PK, NOT NULL | Unique identifier |
+| user_id | UUID | FK, NULLABLE | Owner user ID (NULL in single-user MVP mode) |
 | name | VARCHAR(255) | NOT NULL | User-facing dataset name |
 | file_path | TEXT | NOT NULL | Path to stored file on disk |
 | file_format | VARCHAR(50) | NOT NULL | File format (csv, xlsx, parquet, json) |
@@ -640,6 +711,7 @@ classDiagram
 classDiagram
     class Connection {
         +UUID id PK
+        +UUID user_id FK
         +string name
         +string db_type
         +string host
@@ -658,6 +730,7 @@ classDiagram
 | Field | Type | Constraints | Description |
 |-------|------|-------------|-------------|
 | id | UUID | PK, NOT NULL | Unique identifier |
+| user_id | UUID | FK, NULLABLE | Owner user ID (NULL in single-user MVP mode) |
 | name | VARCHAR(255) | NOT NULL | User-facing connection name |
 | db_type | VARCHAR(50) | NOT NULL | Database type: postgresql, mysql |
 | host | VARCHAR(255) | NOT NULL | Database host |
@@ -710,11 +783,21 @@ classDiagram
 classDiagram
     class Conversation {
         +UUID id PK
+        +UUID user_id FK
         +string title
         +timestamp created_at
         +timestamp updated_at
     }
 ```
+
+**Field Definitions**:
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| id | UUID | PK, NOT NULL | Unique identifier |
+| user_id | UUID | FK, NULLABLE | Owner user ID (NULL in single-user MVP mode) |
+| title | VARCHAR(255) | NOT NULL | Conversation title (auto-generated or user-provided) |
+| created_at | TIMESTAMP | NOT NULL, DEFAULT NOW() | Creation timestamp |
+| updated_at | TIMESTAMP | NOT NULL, DEFAULT NOW() | Last update timestamp |
 
 #### Entity: Message
 
@@ -746,6 +829,7 @@ classDiagram
 classDiagram
     class SavedQuery {
         +UUID id PK
+        +UUID user_id FK
         +string name
         +text sql_content
         +UUID source_id FK
@@ -755,12 +839,25 @@ classDiagram
     }
 ```
 
+**Field Definitions**:
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| id | UUID | PK, NOT NULL | Unique identifier |
+| user_id | UUID | FK, NULLABLE | Owner user ID (NULL in single-user MVP mode) |
+| name | VARCHAR(255) | NOT NULL | User-facing query name |
+| sql_content | TEXT | NOT NULL | SQL query content |
+| source_id | UUID | FK, NULLABLE | Associated data source (Dataset.id or Connection.id) |
+| source_type | VARCHAR(20) | NULLABLE | Source type: dataset, connection |
+| created_at | TIMESTAMP | NOT NULL, DEFAULT NOW() | Creation timestamp |
+| updated_at | TIMESTAMP | NOT NULL, DEFAULT NOW() | Last update timestamp |
+
 #### Entity: ProviderConfig
 
 ```mermaid
 classDiagram
     class ProviderConfig {
         +UUID id PK
+        +UUID user_id FK
         +string provider_name
         +string model_name
         +bytes encrypted_api_key
@@ -772,6 +869,20 @@ classDiagram
     }
 ```
 
+**Field Definitions**:
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| id | UUID | PK, NOT NULL | Unique identifier |
+| user_id | UUID | FK, NULLABLE | Owner user ID (NULL in single-user MVP mode) |
+| provider_name | VARCHAR(50) | NOT NULL | Provider identifier: openai, anthropic, gemini, openai_compatible |
+| model_name | VARCHAR(100) | NOT NULL | Model identifier (e.g., gpt-4o, claude-sonnet-4-20250514) |
+| encrypted_api_key | BYTEA | NOT NULL | Fernet-encrypted API key |
+| base_url | VARCHAR(500) | NULLABLE | Custom base URL for OpenAI-compatible endpoints |
+| is_default | BOOLEAN | NOT NULL, DEFAULT false | Whether this is the default provider |
+| is_active | BOOLEAN | NOT NULL, DEFAULT true | Whether this provider is enabled |
+| created_at | TIMESTAMP | NOT NULL, DEFAULT NOW() | Creation timestamp |
+| updated_at | TIMESTAMP | NOT NULL, DEFAULT NOW() | Last update timestamp |
+
 #### Entity Relationships
 
 ```mermaid
@@ -782,6 +893,7 @@ erDiagram
 
     CONVERSATION {
         UUID id PK
+        UUID user_id FK
         string title
     }
     MESSAGE {
@@ -793,12 +905,14 @@ erDiagram
     }
     DATASET {
         UUID id PK
+        UUID user_id FK
         string name
         string file_format
         string status
     }
     CONNECTION {
         UUID id PK
+        UUID user_id FK
         string name
         string db_type
         string status
@@ -812,11 +926,13 @@ erDiagram
     }
     SAVED_QUERY {
         UUID id PK
+        UUID user_id FK
         string name
         text sql_content
     }
     PROVIDER_CONFIG {
         UUID id PK
+        UUID user_id FK
         string provider_name
         string model_name
         boolean is_default
@@ -1000,19 +1116,69 @@ Content-Type: application/json
 
 **Purpose**: Re-introspect database schema
 
-**Response**: `200 OK` with updated schema metadata
+**Response**:
+
+`200 OK`
+```json
+{
+  "source_id": "uuid",
+  "tables_found": 23,
+  "columns_updated": 156,
+  "refreshed_at": "2026-03-11T00:00:00Z"
+}
+```
 
 ##### Endpoint: `GET /api/v1/connections`
 
 **Purpose**: List all connections
 
+**Response**:
+
+`200 OK`
+```json
+{
+  "connections": [
+    {
+      "id": "uuid",
+      "name": "Production DB",
+      "db_type": "postgresql",
+      "host": "db.example.com",
+      "port": 5432,
+      "database_name": "analytics",
+      "status": "connected",
+      "last_tested_at": "2026-03-11T00:00:00Z",
+      "created_at": "2026-03-11T00:00:00Z"
+    }
+  ]
+}
+```
+
 ##### Endpoint: `PUT /api/v1/connections/{id}`
 
 **Purpose**: Update connection details
 
+**Request**:
+```http
+PUT /api/v1/connections/{id}
+Content-Type: application/json
+
+{
+  "name": "Production DB (Updated)",
+  "host": "db2.example.com",
+  "port": 5432,
+  "database_name": "analytics",
+  "username": "readonly_user",
+  "password": "new_secret"
+}
+```
+
+**Response**: `200 OK` with updated connection object (same shape as POST response)
+
 ##### Endpoint: `DELETE /api/v1/connections/{id}`
 
 **Purpose**: Delete a connection
+
+**Response**: `204 No Content`
 
 ---
 
@@ -1080,13 +1246,68 @@ data: {"message_id": "uuid"}
 
 **Purpose**: List conversations with pagination
 
+**Request**:
+```http
+GET /api/v1/conversations?cursor=uuid&limit=20
+```
+
+**Response**:
+
+`200 OK`
+```json
+{
+  "conversations": [
+    {
+      "id": "uuid",
+      "title": "Revenue Analysis",
+      "created_at": "2026-03-11T00:00:00Z",
+      "updated_at": "2026-03-11T00:00:00Z",
+      "message_count": 12
+    }
+  ],
+  "next_cursor": "uuid_or_null"
+}
+```
+
 ##### Endpoint: `GET /api/v1/conversations/{id}`
 
 **Purpose**: Get conversation with full message history
 
+**Response**:
+
+`200 OK`
+```json
+{
+  "id": "uuid",
+  "title": "Revenue Analysis",
+  "created_at": "2026-03-11T00:00:00Z",
+  "messages": [
+    {
+      "id": "uuid",
+      "role": "user",
+      "content": "What were the top 5 products?",
+      "metadata": null,
+      "created_at": "2026-03-11T00:00:00Z"
+    },
+    {
+      "id": "uuid",
+      "role": "assistant",
+      "content": "Here are the top 5 products...",
+      "metadata": {
+        "sql": "SELECT ...",
+        "chart_config": {}
+      },
+      "created_at": "2026-03-11T00:00:01Z"
+    }
+  ]
+}
+```
+
 ##### Endpoint: `DELETE /api/v1/conversations/{id}`
 
 **Purpose**: Delete a conversation
+
+**Response**: `204 No Content`
 
 ---
 
@@ -1124,17 +1345,113 @@ Content-Type: application/json
 
 **Purpose**: Get EXPLAIN plan for a query
 
+**Request**:
+```http
+POST /api/v1/queries/explain
+Content-Type: application/json
+
+{
+  "sql": "SELECT * FROM sales WHERE revenue > 1000",
+  "source_id": "uuid",
+  "source_type": "dataset"
+}
+```
+
+**Response**:
+
+`200 OK`
+```json
+{
+  "plan": "Seq Scan on sales (cost=0.00..35.50 rows=1000 width=32)\n  Filter: (revenue > 1000)",
+  "estimated_rows": 1000,
+  "estimated_cost": 35.50
+}
+```
+
 ##### Endpoint: `POST /api/v1/queries/save`
 
 **Purpose**: Save a query for later use
+
+**Request**:
+```http
+POST /api/v1/queries/save
+Content-Type: application/json
+
+{
+  "name": "Top Products by Revenue",
+  "sql_content": "SELECT product, SUM(revenue) FROM sales GROUP BY product ORDER BY 2 DESC LIMIT 10",
+  "source_id": "uuid",
+  "source_type": "dataset"
+}
+```
+
+**Response**:
+
+`201 Created`
+```json
+{
+  "id": "uuid",
+  "name": "Top Products by Revenue",
+  "sql_content": "SELECT product, SUM(revenue) FROM sales GROUP BY product ORDER BY 2 DESC LIMIT 10",
+  "source_id": "uuid",
+  "source_type": "dataset",
+  "created_at": "2026-03-11T00:00:00Z"
+}
+```
 
 ##### Endpoint: `GET /api/v1/queries/saved`
 
 **Purpose**: List saved queries
 
+**Response**:
+
+`200 OK`
+```json
+{
+  "queries": [
+    {
+      "id": "uuid",
+      "name": "Top Products by Revenue",
+      "sql_content": "SELECT product, SUM(revenue) FROM sales GROUP BY product ORDER BY 2 DESC LIMIT 10",
+      "source_id": "uuid",
+      "source_type": "dataset",
+      "created_at": "2026-03-11T00:00:00Z",
+      "updated_at": "2026-03-11T00:00:00Z"
+    }
+  ]
+}
+```
+
 ##### Endpoint: `GET /api/v1/queries/history`
 
 **Purpose**: Get query execution history
+
+**Request**:
+```http
+GET /api/v1/queries/history?limit=50&offset=0
+```
+
+**Response**:
+
+`200 OK`
+```json
+{
+  "history": [
+    {
+      "sql": "SELECT product, SUM(revenue) FROM sales GROUP BY product",
+      "source_id": "uuid",
+      "source_type": "dataset",
+      "row_count": 25,
+      "execution_time_ms": 45,
+      "status": "success",
+      "executed_at": "2026-03-11T00:00:00Z"
+    }
+  ],
+  "total": 150,
+  "offset": 0,
+  "limit": 50
+}
+```
 
 ---
 
@@ -1176,6 +1493,29 @@ Content-Type: application/json
 
 **Purpose**: List configured AI providers
 
+**Response**:
+
+`200 OK`
+```json
+{
+  "providers": [
+    {
+      "id": "uuid",
+      "provider_name": "openai",
+      "model_name": "gpt-4o",
+      "base_url": null,
+      "is_default": true,
+      "is_active": true,
+      "has_api_key": true,
+      "source": "ui",
+      "created_at": "2026-03-11T00:00:00Z"
+    }
+  ]
+}
+```
+
+**Notes**: `has_api_key` indicates whether a key is configured (never expose actual key). `source` is `"ui"` or `"env_var"` to indicate origin.
+
 ##### Endpoint: `POST /api/v1/settings/providers`
 
 **Purpose**: Add or update a provider configuration
@@ -1194,9 +1534,28 @@ Content-Type: application/json
 }
 ```
 
+**Response**:
+
+`201 Created`
+```json
+{
+  "id": "uuid",
+  "provider_name": "openai",
+  "model_name": "gpt-4o",
+  "base_url": null,
+  "is_default": true,
+  "is_active": true,
+  "has_api_key": true,
+  "source": "ui",
+  "created_at": "2026-03-11T00:00:00Z"
+}
+```
+
 ##### Endpoint: `DELETE /api/v1/settings/providers/{id}`
 
 **Purpose**: Remove a provider configuration
+
+**Response**: `204 No Content`
 
 ---
 
@@ -1292,7 +1651,7 @@ sequenceDiagram
 - **Collaborative features**: No shared dashboards, comments, or multi-user sessions
 - **Embedded analytics**: No iframe or widget embedding
 - **Mobile native apps**: Web-only (responsive), no iOS/Android apps
-- **Data export**: No bulk export functionality beyond chart PNG/SVG export
+- **Data export**: No bulk export functionality beyond chart PNG/SVG export and CSV export of visible query results
 
 ### 8.3 Future Considerations
 - Multi-user support with role-based access control
@@ -1497,6 +1856,8 @@ Provide production-ready manifests for:
 
 ### 11.4 Monitoring & Alerting
 
+**Monitoring Stack**: Use Python structured logging (JSON format via `structlog`) with log-based metrics. For production deployments, recommend Prometheus for metrics collection and Grafana for dashboards. MVP uses structured log output compatible with any log aggregation tool (e.g., Loki, ELK, CloudWatch).
+
 | Metric | Threshold | Description |
 |--------|-----------|-------------|
 | API error rate | > 5% of requests | Backend returning 5xx errors |
@@ -1525,33 +1886,36 @@ Provide production-ready manifests for:
 
 ### 12.2 External Library Dependencies
 
+**Note**: Pin to the latest stable release at project initialization. The versions below indicate minimum compatibility requirements.
+
 **Python**:
 | Library | Version | Purpose |
 |---------|---------|---------|
-| FastAPI | Latest | Web framework |
-| Pydantic AI | Latest | AI agent framework |
+| FastAPI | 0.115+ | Web framework |
+| Pydantic AI | 0.1+ | AI agent framework |
 | Pydantic | v2+ | Data validation |
-| Pydantic Settings | Latest | Configuration management |
-| DuckDB | Latest | Analytical query engine |
+| Pydantic Settings | v2+ | Configuration management |
+| DuckDB | 1.2+ | Analytical query engine |
 | SQLAlchemy | 2.0+ | Database ORM |
-| cryptography (Fernet) | Latest | API key encryption |
-| Alembic | Latest | Database migrations |
-| uvicorn | Latest | ASGI server |
-| sse-starlette | Latest | SSE support for FastAPI |
+| cryptography (Fernet) | 44+ | API key encryption |
+| Alembic | 1.14+ | Database migrations |
+| uvicorn | 0.34+ | ASGI server |
+| sse-starlette | 2.0+ | SSE support for FastAPI |
+| structlog | 25+ | Structured JSON logging |
 
 **TypeScript/React**:
 | Library | Version | Purpose |
 |---------|---------|---------|
 | React | 19+ | UI framework |
-| Vite | Latest | Build tool |
+| Vite | 6+ | Build tool |
 | Tailwind CSS | 4+ | Utility-first styling |
-| shadcn/ui | Latest | Component library |
-| Vercel ai-sdk | Latest | AI streaming integration |
+| shadcn/ui | Latest | Component library (installed via CLI, no npm version) |
+| Vercel ai-sdk | 4+ | AI streaming integration |
 | Tambo AI | Latest | Conversational UI components |
 | Streamdown | Latest | Streaming markdown renderer |
-| Plotly.js / react-plotly.js | Latest | Interactive visualizations |
+| Plotly.js / react-plotly.js | 2.35+ / 7+ | Interactive visualizations |
 | TanStack Query | v5+ | Server state management |
-| Zustand | Latest | Client state management |
+| Zustand | 5+ | Client state management |
 | CodeMirror 6 or Monaco Editor | Latest | SQL editor |
 
 ## 13. Risks & Mitigations
@@ -1617,6 +1981,7 @@ Provide production-ready manifests for:
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | 2026-03-11 | Stephen Sequenzia | Initial version |
+| 1.1 | 2026-03-11 | Stephen Sequenzia | Analysis fixes: added user_id to all entities, added missing field definition tables (Conversation, SavedQuery, ProviderConfig), added API endpoint schemas for stub endpoints, added edge cases/error handling to P1/P2 features, pinned library versions, specified pnpm as JS package manager, specified monitoring stack, clarified data export scope, added Jordan persona technical proficiency |
 
 ---
 
