@@ -1,5 +1,6 @@
 services:
   postgres:
+    profiles: ["local-db"]
     image: postgres:16
     ports:
       - "5432:5432"
@@ -27,11 +28,8 @@ services:
       - ./backend:/app
       - backend_venv:/app/.venv
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-datax}:${POSTGRES_PASSWORD:-datax}@postgres:5432/${POSTGRES_DB:-datax}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-datax}:${POSTGRES_PASSWORD:-datax}@postgres:5432/${POSTGRES_DB:-datax}}
       DATAX_ENCRYPTION_KEY: ${DATAX_ENCRYPTION_KEY:-dev-only_ulHPfBdOTM5i8oPZdpi9S0X-di0ON2QNlMSK1J0LN8Y=}
-    depends_on:
-      postgres:
-        condition: service_healthy
     networks:
       - datax
 

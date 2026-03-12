@@ -6,6 +6,7 @@ import {
   fetchDataset,
   fetchDatasetPreview,
   deleteDataset,
+  uploadDataset,
 } from "@/lib/api";
 
 export function useDatasetList() {
@@ -46,6 +47,17 @@ export function useDeleteDataset() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: deleteDataset,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["datasets"] });
+    },
+  });
+}
+
+export function useUploadDataset() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ file, name }: { file: File; name?: string }) =>
+      uploadDataset(file, name),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["datasets"] });
     },

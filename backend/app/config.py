@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="",
         case_sensitive=True,
+        env_file=("../.env", "../.env.local", ".env", ".env.local"),
+        env_file_encoding="utf-8",
     )
 
     # Required

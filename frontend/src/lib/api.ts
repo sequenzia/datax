@@ -4,6 +4,7 @@ import type {
   Dataset,
   DatasetDetail,
   DatasetPreview,
+  DatasetUploadResponse,
   Connection,
   ConnectionDetail,
   ConnectionTestResult,
@@ -77,6 +78,25 @@ export function fetchDatasetPreview(
 
 export function deleteDataset(id: string): Promise<void> {
   return apiMutate<void>(`/datasets/${id}`, { method: "DELETE" });
+}
+
+export async function uploadDataset(
+  file: File,
+  name?: string,
+): Promise<DatasetUploadResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+  if (name) formData.append("name", name);
+
+  const response = await fetch(`${API_BASE}/datasets/upload`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => response.statusText);
+    throw new Error(text || `API error: ${response.status}`);
+  }
+  return response.json() as Promise<DatasetUploadResponse>;
 }
 
 export async function fetchConnections(): Promise<Connection[]> {

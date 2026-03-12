@@ -86,6 +86,15 @@ export interface ConnectionTestResult {
   error: string | null;
 }
 
+export interface DatasetUploadResponse {
+  id: string;
+  name: string;
+  file_format: string;
+  file_size_bytes: number;
+  status: string;
+  created_at: string;
+}
+
 export interface ConnectionCreateRequest {
   name: string;
   db_type: string;

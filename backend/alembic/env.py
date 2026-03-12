@@ -6,10 +6,16 @@ all SQLAlchemy models so autogenerate can detect schema changes.
 
 import os
 from logging.config import fileConfig
+from pathlib import Path
 
+from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 
 from alembic import context
+
+# Load .env.local from project root so DATABASE_URL is available
+# without requiring it to be set in the shell environment.
+load_dotenv(Path(__file__).resolve().parents[2] / ".env.local")
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -30,6 +36,8 @@ target_metadata = Base.metadata
 # This avoids storing credentials in alembic.ini.
 database_url = os.environ.get("DATABASE_URL")
 if database_url:
+    # Ensure SQLAlchemy uses psycopg v3 driver, not legacy psycopg2
+    database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
     config.set_main_option("sqlalchemy.url", database_url)
 
 

@@ -24,6 +24,11 @@ const DatasetDetailPage = lazy(() =>
     default: m.DatasetDetailPage,
   })),
 );
+const DatasetUploadPage = lazy(() =>
+  import("@/pages/dataset-upload").then((m) => ({
+    default: m.DatasetUploadPage,
+  })),
+);
 const ConnectionsPage = lazy(() =>
   import("@/pages/connections").then((m) => ({
     default: m.ConnectionsPage,
@@ -63,6 +68,7 @@ function App() {
             <Route path="sql" element={<SqlEditorPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="datasets" element={<DatasetsPage />} />
+            <Route path="datasets/upload" element={<DatasetUploadPage />} />
             <Route path="datasets/:id" element={<DatasetDetailPage />} />
             <Route path="connections" element={<ConnectionsPage />} />
             <Route path="connections/new" element={<ConnectionFormPage />} />
