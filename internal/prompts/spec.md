@@ -36,7 +36,6 @@ Typescript:
 - Tambo AI: AI agent framework for building conversational interfaces
 - Streamdown: Streaming markdown renderer for React
 
-Open questions:
+Open Questions to be answered:
 - Next.js or Vite + React for the frontend framework?
 - Visualization library for insights and visualizations (e.g., D3.js, Chart.js, Recharts, Plotly)?
-
