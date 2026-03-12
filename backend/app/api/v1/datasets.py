@@ -142,7 +142,8 @@ async def upload_dataset(
     # Ensure table name uniqueness by appending UUID suffix
     duckdb_table = f"{duckdb_table}_{dest_path.stem.split('_')[-1]}"
 
-    # Create Dataset record
+    # Create Dataset record — commit immediately so the background task
+    # (which uses a separate session) can see the row.
     dataset = Dataset(
         name=display_name,
         file_path=str(dest_path),
@@ -152,7 +153,8 @@ async def upload_dataset(
         status=DatasetStatus.PROCESSING.value,
     )
     db.add(dataset)
-    db.flush()
+    db.commit()
+    db.refresh(dataset)
 
     dataset_id = str(dataset.id)
     created_at = dataset.created_at.isoformat() if dataset.created_at else None

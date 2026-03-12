@@ -70,6 +70,9 @@ class ShutdownManager:
         sig_name = signal.Signals(sig).name if isinstance(sig, int) else sig.name
         logger.info("shutdown_signal_received", signal=sig_name)
         self._shutdown_event.set()
+        # Raise SystemExit so uvicorn's shutdown logic kicks in and the
+        # lifespan context manager can run its cleanup (drain, close pools).
+        raise SystemExit(0)
 
     async def track(self, kind: str = "unknown") -> int:
         """Register an in-flight task (SSE connection, active query, etc.).
