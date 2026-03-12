@@ -96,3 +96,27 @@ docker compose up -d             # Detached mode
 - **SchemaMetadata is polymorphic**: `source_type` (dataset/connection) + `source_id` pattern — no separate tables for dataset vs connection schemas
 - **Chart type selection**: AI chooses chart type based on query result shape heuristics, generates Plotly JSON config
 - **Cross-source queries**: Virtual Data Layer can orchestrate queries spanning both DuckDB and live databases
+
+## Implementation Patterns
+
+### Backend
+- **App factory**: `create_app(settings=None)` in `app/main.py` — no module-level app instance; use `uv run uvicorn app.main:create_app --factory`
+- **App state**: DuckDB manager, DB engine, session factory, connection manager, settings all attached to `app.state`
+- **Dependencies**: `backend/app/dependencies.py` provides `get_db`, `get_duckdb_manager`, `get_connection_manager`, `get_settings`, etc.
+- **Database**: `backend/app/database.py` for SQLAlchemy engine/session factory creation; psycopg[binary] v3.2+ driver
+- **Services**: business logic in `backend/app/services/` (duckdb_manager, connection_manager, provider_service, query_service, nl_query_service, agent_service, schema_context, schema_introspection, chart_heuristics, chart_config, cross_source_query, file_upload)
+- **Tests**: use `sqlite://` DATABASE_URL (not postgresql), httpx.AsyncClient + ASGITransport
+- **JSONB columns**: `JSON().with_variant(JSONB, "postgresql")` for SQLite test compatibility
+- **Boolean defaults**: `sa_true()`/`sa_false()` for cross-database `server_default`
+
+### Frontend
+- **Vite 7 + React 19 + TypeScript 5.9** with strict mode
+- **Tailwind CSS 4** via @tailwindcss/vite plugin (no PostCSS config)
+- **shadcn/ui v4**: components in `src/components/ui/`, components.json created manually
+- **CodeMirror 6** for SQL editor (lighter than Monaco for SQL-only use case)
+- **Streamdown** for streaming markdown rendering in chat
+- **react-plotly.js** for interactive chart rendering
+- **Path alias**: `@/` maps to `src/` in both tsconfig.json and vite.config.ts
+- **File organization**: contexts in `src/contexts/`, hooks in `src/hooks/`, stores in `src/stores/`, types in `src/types/`, API client in `src/lib/api.ts`
+- **Testing**: vitest v4 with jsdom, separate vitest.config.ts (avoids tailwind plugin in test env); jsdom 28+ requires localStorage + matchMedia mocks
+- **Responsive**: three layout modes (mobile < 768px, tablet 768-1279px, desktop 1280px+) via `useBreakpoint()` hook

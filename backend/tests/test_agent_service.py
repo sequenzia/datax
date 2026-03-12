@@ -1,0 +1,437 @@
+"""Tests for the Pydantic AI agent service.
+
+Covers:
+- Unit: Agent factory for each provider type (openai, anthropic, gemini, openai_compatible)
+- Unit: Config loading from DB + env var override
+- Unit: Error handling (no provider, invalid provider, invalid API key)
+- Integration: Agent responds to basic prompt (using TestModel)
+"""
+
+from __future__ import annotations
+
+import os
+import uuid
+from unittest.mock import patch
+
+import pytest
+from cryptography.fernet import Fernet
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.test import TestModel
+
+from app.services.agent_service import (
+    AgentDeps,
+    InvalidProviderError,
+    NoProviderConfiguredError,
+    _resolve_api_key,
+    create_agent,
+    create_model,
+    resolve_provider_config,
+)
+from app.services.provider_service import (
+    ProviderRecord,
+    _reset_store,
+    create_provider,
+)
+
+# Generate a valid Fernet key for tests
+TEST_FERNET_KEY = Fernet.generate_key().decode()
+
+
+def _test_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Return test environment with encryption key and optional extras."""
+    env = {
+        "DATABASE_URL": "sqlite:///:memory:",
+        "DATAX_ENCRYPTION_KEY": TEST_FERNET_KEY,
+    }
+    if extra:
+        env.update(extra)
+    return env
+
+
+@pytest.fixture(autouse=True)
+def reset_provider_store():
+    """Reset the in-memory provider store before each test."""
+    _reset_store()
+    yield
+    _reset_store()
+
+
+# ---------------------------------------------------------------------------
+# Unit: create_model for each provider type
+# ---------------------------------------------------------------------------
+
+
+class TestCreateModelOpenAI:
+    """Test model creation for the OpenAI provider."""
+
+    def test_creates_openai_chat_model(self) -> None:
+        """create_model with 'openai' returns an OpenAIChatModel."""
+        model = create_model(
+            provider_name="openai",
+            model_name="gpt-4o",
+            api_key="sk-test-key",
+        )
+        assert isinstance(model, OpenAIChatModel)
+
+    def test_openai_model_with_custom_model_name(self) -> None:
+        """create_model supports custom OpenAI model names."""
+        model = create_model(
+            provider_name="openai",
+            model_name="gpt-4o-mini",
+            api_key="sk-test-key",
+        )
+        assert isinstance(model, OpenAIChatModel)
+
+
+class TestCreateModelAnthropic:
+    """Test model creation for the Anthropic provider."""
+
+    def test_creates_anthropic_model(self) -> None:
+        """create_model with 'anthropic' returns a valid model."""
+        model = create_model(
+            provider_name="anthropic",
+            model_name="claude-sonnet-4-20250514",
+            api_key="sk-ant-test-key",
+        )
+        # Should be either AnthropicModel or a fallback model
+        assert model is not None
+
+
+class TestCreateModelGemini:
+    """Test model creation for the Gemini provider."""
+
+    def test_creates_gemini_model(self) -> None:
+        """create_model with 'gemini' returns a valid model."""
+        model = create_model(
+            provider_name="gemini",
+            model_name="gemini-2.0-flash",
+            api_key="AIzaSy-test-key",
+        )
+        assert model is not None
+
+
+class TestCreateModelOpenAICompatible:
+    """Test model creation for the OpenAI-compatible provider."""
+
+    def test_creates_openai_compatible_model(self) -> None:
+        """create_model with 'openai_compatible' and base_url returns OpenAIChatModel."""
+        model = create_model(
+            provider_name="openai_compatible",
+            model_name="local-llm",
+            api_key="sk-test-key",
+            base_url="http://localhost:8080/v1",
+        )
+        assert isinstance(model, OpenAIChatModel)
+
+    def test_openai_compatible_without_base_url_raises(self) -> None:
+        """create_model with 'openai_compatible' without base_url raises InvalidProviderError."""
+        with pytest.raises(InvalidProviderError, match="base_url is required"):
+            create_model(
+                provider_name="openai_compatible",
+                model_name="local-llm",
+                api_key="sk-test-key",
+            )
+
+
+class TestCreateModelInvalid:
+    """Test error handling for invalid provider names."""
+
+    def test_unsupported_provider_raises(self) -> None:
+        """create_model with unknown provider raises InvalidProviderError."""
+        with pytest.raises(InvalidProviderError, match="Unsupported provider"):
+            create_model(
+                provider_name="invalid_provider",
+                model_name="model",
+                api_key="key",
+            )
+
+
+# ---------------------------------------------------------------------------
+# Unit: API key resolution (env var override + DB)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveApiKey:
+    """Test API key resolution with env var override."""
+
+    def test_env_var_overrides_db_key(self) -> None:
+        """Env var API key takes precedence over DB-stored key."""
+        env = _test_env({"DATAX_OPENAI_API_KEY": "sk-env-key"})
+        with patch.dict(os.environ, env, clear=True):
+            record = create_provider(
+                provider_name="openai",
+                model_name="gpt-4o",
+                api_key="sk-db-key",
+            )
+            resolved = _resolve_api_key("openai", record)
+            assert resolved == "sk-env-key"
+
+    def test_db_key_used_when_no_env_var(self) -> None:
+        """DB-stored key used when no env var is set."""
+        with patch.dict(os.environ, _test_env(), clear=True):
+            record = create_provider(
+                provider_name="openai",
+                model_name="gpt-4o",
+                api_key="sk-db-key",
+            )
+            resolved = _resolve_api_key("openai", record)
+            assert resolved == "sk-db-key"
+
+    def test_no_key_available_raises(self) -> None:
+        """Missing API key raises InvalidProviderError."""
+        with patch.dict(os.environ, _test_env(), clear=True):
+            record = ProviderRecord(
+                id=uuid.uuid4(),
+                provider_name="openai",
+                model_name="gpt-4o",
+                base_url=None,
+                is_default=True,
+                is_active=True,
+                has_api_key=False,
+                source="ui",
+                created_at=None,  # type: ignore[arg-type]
+                encrypted_api_key=None,
+            )
+            with pytest.raises(InvalidProviderError, match="No API key available"):
+                _resolve_api_key("openai", record)
+
+    def test_env_var_whitespace_only_falls_through(self) -> None:
+        """Whitespace-only env var falls through to DB key."""
+        env = _test_env({"DATAX_OPENAI_API_KEY": "   "})
+        with patch.dict(os.environ, env, clear=True):
+            record = create_provider(
+                provider_name="openai",
+                model_name="gpt-4o",
+                api_key="sk-db-key",
+            )
+            resolved = _resolve_api_key("openai", record)
+            assert resolved == "sk-db-key"
+
+
+# ---------------------------------------------------------------------------
+# Unit: Provider resolution
+# ---------------------------------------------------------------------------
+
+
+class TestResolveProviderConfig:
+    """Test provider config resolution logic."""
+
+    def test_no_providers_raises(self) -> None:
+        """No providers configured raises NoProviderConfiguredError."""
+        with patch.dict(os.environ, _test_env(), clear=True):
+            with pytest.raises(NoProviderConfiguredError, match="No AI provider"):
+                resolve_provider_config()
+
+    def test_default_provider_selected(self) -> None:
+        """Default provider is selected when no ID given."""
+        with patch.dict(os.environ, _test_env(), clear=True):
+            create_provider(
+                provider_name="openai",
+                model_name="gpt-4o",
+                api_key="sk-test",
+                is_default=False,
+            )
+            create_provider(
+                provider_name="anthropic",
+                model_name="claude-sonnet-4-20250514",
+                api_key="sk-test-2",
+                is_default=True,
+            )
+            result = resolve_provider_config()
+            assert result.provider_name == "anthropic"
+            assert result.is_default is True
+
+    def test_first_active_used_when_no_default(self) -> None:
+        """First active provider used when none is marked as default."""
+        with patch.dict(os.environ, _test_env(), clear=True):
+            create_provider(
+                provider_name="openai",
+                model_name="gpt-4o",
+                api_key="sk-test",
+                is_default=False,
+            )
+            result = resolve_provider_config()
+            assert result.provider_name == "openai"
+
+    def test_env_var_provider_used_when_only_env(self) -> None:
+        """Env var provider is resolved when it's the only provider."""
+        env = _test_env({"DATAX_OPENAI_API_KEY": "sk-env-key"})
+        with patch.dict(os.environ, env, clear=True):
+            result = resolve_provider_config()
+            assert result.provider_name == "openai"
+            assert result.source == "env_var"
+
+    def test_specific_provider_id(self) -> None:
+        """Specific provider ID is resolved correctly."""
+        with patch.dict(os.environ, _test_env(), clear=True):
+            record = create_provider(
+                provider_name="openai",
+                model_name="gpt-4o",
+                api_key="sk-test",
+            )
+            result = resolve_provider_config(provider_id=str(record.id))
+            assert result.id == record.id
+
+    def test_invalid_provider_id_raises(self) -> None:
+        """Invalid provider ID format raises InvalidProviderError."""
+        with pytest.raises(InvalidProviderError, match="Invalid provider ID"):
+            resolve_provider_config(provider_id="not-a-uuid")
+
+    def test_nonexistent_provider_id_raises(self) -> None:
+        """Non-existent provider ID raises InvalidProviderError."""
+        fake_id = str(uuid.uuid4())
+        with patch.dict(os.environ, _test_env(), clear=True):
+            with pytest.raises(InvalidProviderError, match="not found"):
+                resolve_provider_config(provider_id=fake_id)
+
+
+# ---------------------------------------------------------------------------
+# Unit: Agent factory
+# ---------------------------------------------------------------------------
+
+
+class TestCreateAgent:
+    """Test the create_agent factory function."""
+
+    def test_creates_agent_with_openai(self) -> None:
+        """create_agent creates an agent with OpenAI provider."""
+        env = _test_env({"DATAX_OPENAI_API_KEY": "sk-test-openai"})
+        with patch.dict(os.environ, env, clear=True):
+            agent = create_agent()
+            assert agent is not None
+            assert agent.name == "datax-analytics"
+
+    def test_creates_agent_with_anthropic(self) -> None:
+        """create_agent creates an agent with Anthropic provider."""
+        env = _test_env({"DATAX_ANTHROPIC_API_KEY": "sk-ant-test"})
+        with patch.dict(os.environ, env, clear=True):
+            agent = create_agent()
+            assert agent is not None
+            assert agent.name == "datax-analytics"
+
+    def test_creates_agent_with_gemini(self) -> None:
+        """create_agent creates an agent with Gemini provider."""
+        env = _test_env({"DATAX_GEMINI_API_KEY": "AIzaSy-test"})
+        with patch.dict(os.environ, env, clear=True):
+            agent = create_agent()
+            assert agent is not None
+            assert agent.name == "datax-analytics"
+
+    def test_creates_agent_with_openai_compatible(self) -> None:
+        """create_agent creates an agent with OpenAI-compatible provider."""
+        with patch.dict(os.environ, _test_env(), clear=True):
+            create_provider(
+                provider_name="openai_compatible",
+                model_name="local-llm",
+                api_key="sk-test",
+                base_url="http://localhost:8080/v1",
+                is_default=True,
+            )
+            agent = create_agent()
+            assert agent is not None
+            assert agent.name == "datax-analytics"
+
+    def test_no_provider_raises_clear_error(self) -> None:
+        """create_agent with no configured provider raises NoProviderConfiguredError."""
+        with patch.dict(os.environ, _test_env(), clear=True):
+            with pytest.raises(NoProviderConfiguredError, match="No AI provider"):
+                create_agent()
+
+    def test_provider_switchable_without_restart(self) -> None:
+        """Different providers can be used by different create_agent calls."""
+        env = _test_env({"DATAX_OPENAI_API_KEY": "sk-openai"})
+        with patch.dict(os.environ, env, clear=True):
+            # Create agent with env var openai
+            agent1 = create_agent()
+            assert agent1 is not None
+
+            # Create another provider and use it specifically
+            record = create_provider(
+                provider_name="openai",
+                model_name="gpt-4o-mini",
+                api_key="sk-other",
+            )
+            agent2 = create_agent(provider_id=str(record.id))
+            assert agent2 is not None
+            # They should be different agent instances
+            assert agent1 is not agent2
+
+    def test_agent_has_system_prompt(self) -> None:
+        """Created agent has the analytics system prompt."""
+        env = _test_env({"DATAX_OPENAI_API_KEY": "sk-test"})
+        with patch.dict(os.environ, env, clear=True):
+            agent = create_agent()
+            # Check that instructions contain the system prompt
+            assert agent._instructions is not None
+            assert "DataX" in agent._instructions
+
+
+class TestAgentDeps:
+    """Test the AgentDeps dataclass."""
+
+    def test_default_deps(self) -> None:
+        """AgentDeps has sensible defaults."""
+        deps = AgentDeps()
+        assert deps.schema_context == ""
+        assert deps.conversation_id is None
+        assert deps.available_tables == []
+
+    def test_deps_with_values(self) -> None:
+        """AgentDeps can be created with custom values."""
+        deps = AgentDeps(
+            schema_context="table: users (id, name, email)",
+            conversation_id="conv-123",
+            available_tables=["users", "orders"],
+        )
+        assert deps.schema_context == "table: users (id, name, email)"
+        assert deps.conversation_id == "conv-123"
+        assert deps.available_tables == ["users", "orders"]
+
+
+# ---------------------------------------------------------------------------
+# Integration: Agent responds to basic prompt
+# ---------------------------------------------------------------------------
+
+
+class TestAgentIntegration:
+    """Integration tests using pydantic-ai's TestModel."""
+
+    @pytest.mark.asyncio
+    async def test_agent_responds_to_basic_prompt(self) -> None:
+        """Agent created via factory can respond to a basic prompt using TestModel."""
+        env = _test_env({"DATAX_OPENAI_API_KEY": "sk-test"})
+        with patch.dict(os.environ, env, clear=True):
+            agent = create_agent()
+
+            # Override the model with TestModel for testing
+            test_model = TestModel(custom_output_text="Here are the top 10 users by order count.")
+
+            result = await agent.run(
+                "Show me the top 10 users by order count",
+                deps=AgentDeps(
+                    schema_context="table: users (id, name), orders (id, user_id, amount)",
+                    available_tables=["users", "orders"],
+                ),
+                model=test_model,
+            )
+
+            assert result.output is not None
+            assert isinstance(result.output, str)
+            assert len(result.output) > 0
+
+    @pytest.mark.asyncio
+    async def test_agent_with_empty_deps(self) -> None:
+        """Agent works with default empty deps."""
+        env = _test_env({"DATAX_OPENAI_API_KEY": "sk-test"})
+        with patch.dict(os.environ, env, clear=True):
+            agent = create_agent()
+            test_model = TestModel(custom_output_text="I need more context about your data.")
+
+            result = await agent.run(
+                "What data do I have?",
+                deps=AgentDeps(),
+                model=test_model,
+            )
+
+            assert result.output is not None
+            assert "context" in result.output.lower()

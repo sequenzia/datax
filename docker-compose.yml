@@ -1,0 +1,60 @@
+services:
+  postgres:
+    image: postgres:16
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-datax}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-datax}
+      POSTGRES_DB: ${POSTGRES_DB:-datax}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-datax} -d ${POSTGRES_DB:-datax}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - datax
+
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - backend_venv:/app/.venv
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-datax}:${POSTGRES_PASSWORD:-datax}@postgres:5432/${POSTGRES_DB:-datax}
+      DATAX_ENCRYPTION_KEY: ${DATAX_ENCRYPTION_KEY:-dev-only_ulHPfBdOTM5i8oPZdpi9S0X-di0ON2QNlMSK1J0LN8Y=}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - datax
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    environment:
+      VITE_API_URL: http://backend:8000
+    depends_on:
+      - backend
+    networks:
+      - datax
+
+volumes:
+  postgres_data:
+  backend_venv:
+  frontend_node_modules:
+
+networks:
+  datax:
+    driver: bridge
