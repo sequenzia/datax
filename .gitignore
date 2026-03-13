@@ -2,6 +2,8 @@
 .env.local
 .env*.local
 
+data/uploads/
+
 # Python
 __pycache__/
 *.pyc
