@@ -79,7 +79,7 @@ function useToast() {
     message: string;
     type: "success" | "error";
   } | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const showToast = useCallback(
     (message: string, type: "success" | "error") => {

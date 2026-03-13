@@ -91,7 +91,7 @@ function StepUploadConnect({ onDismiss }: { onDismiss: () => void }) {
     <div className="space-y-6" data-testid="step-upload-connect">
       <div className="grid gap-4 sm:grid-cols-2">
         <Link
-          to="/datasets/upload"
+          to="/data"
           onClick={onDismiss}
           className="group flex flex-col items-center gap-3 rounded-xl border-2 border-dashed p-6 transition-colors hover:border-primary hover:bg-accent"
           data-testid="upload-data-link"
@@ -103,7 +103,7 @@ function StepUploadConnect({ onDismiss }: { onDismiss: () => void }) {
           </span>
         </Link>
         <Link
-          to="/connections/new"
+          to="/data"
           onClick={onDismiss}
           className="group flex flex-col items-center gap-3 rounded-xl border-2 border-dashed p-6 transition-colors hover:border-primary hover:bg-accent"
           data-testid="connect-db-link"

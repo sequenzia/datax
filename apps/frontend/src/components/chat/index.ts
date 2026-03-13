@@ -2,3 +2,8 @@ export { ChatInput } from "./chat-input";
 export { MarkdownContent } from "./markdown-content";
 export { MessageBubble } from "./message-bubble";
 export { StreamingText } from "./streaming-text";
+export { InlineResultBlock } from "./inline-result-block";
+export { InlineSqlBlock } from "./inline-sql-block";
+export { InlineTablePreview } from "./inline-table-preview";
+export { InlineChartBlock } from "./inline-chart-block";
+export { DataExplorerModal } from "./data-explorer-modal";

@@ -24,37 +24,38 @@ function loadPersistedConversationId(): string | null {
   return localStorage.getItem(STORAGE_KEY);
 }
 
+/** Metadata accumulated during streaming from SSE events */
+export interface StreamingMetadata {
+  sql: string | null;
+  queryResult: Record<string, unknown> | null;
+  chartConfig: Record<string, unknown> | null;
+}
+
 interface ChatState {
-  /** Current conversation ID (null = no conversation selected) */
   conversationId: string | null;
-  /** Messages in the current conversation */
   messages: Message[];
-  /** Current streaming status */
   status: ChatStatus;
-  /** Error message if any */
   error: string | null;
-  /** Accumulated streaming text for the current assistant response */
   streamingContent: string;
-  /** AbortController for the current SSE stream */
+  /** Metadata accumulated from SSE events during streaming */
+  streamingMetadata: StreamingMetadata;
   abortController: AbortController | null;
-  /** Whether the persisted conversation has been restored */
   _restored: boolean;
 
-  /** Start a new conversation */
   newConversation: () => Promise<string | null>;
-  /** Switch to an existing conversation (loads messages) */
   switchConversation: (conversationId: string) => Promise<void>;
-  /** Send a user message and stream the AI response */
   sendMessage: (content: string) => Promise<void>;
-  /** Cancel the current streaming response */
   cancelStream: () => void;
-  /** Clear the error state */
   clearError: () => void;
-  /** Reset to initial state */
   reset: () => void;
-  /** Restore persisted conversation on app load */
   restoreSession: () => Promise<void>;
 }
+
+const EMPTY_STREAMING_METADATA: StreamingMetadata = {
+  sql: null,
+  queryResult: null,
+  chartConfig: null,
+};
 
 export const useChatStore = create<ChatState>((set, get) => ({
   conversationId: null,
@@ -62,6 +63,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   status: "idle",
   error: null,
   streamingContent: "",
+  streamingMetadata: { ...EMPTY_STREAMING_METADATA },
   abortController: null,
   _restored: false,
 
@@ -76,6 +78,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         status: "idle",
         error: null,
         streamingContent: "",
+        streamingMetadata: { ...EMPTY_STREAMING_METADATA },
       });
       return conversation.id;
     } catch (err: unknown) {
@@ -89,7 +92,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   switchConversation: async (conversationId: string) => {
-    // Cancel any existing stream
     get().cancelStream();
 
     set({
@@ -98,6 +100,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       status: "loading",
       error: null,
       streamingContent: "",
+      streamingMetadata: { ...EMPTY_STREAMING_METADATA },
     });
 
     try {
@@ -124,7 +127,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   sendMessage: async (content: string) => {
     const state = get();
 
-    // Auto-create conversation if none selected
     let convId = state.conversationId;
     const isFirstMessage = !convId || state.messages.length === 0;
     if (!convId) {
@@ -133,7 +135,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       convId = newId;
     }
 
-    // Add user message optimistically
     const userMessage: Message = {
       id: `temp-user-${Date.now()}`,
       role: "user",
@@ -147,15 +148,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       status: "streaming",
       error: null,
       streamingContent: "",
+      streamingMetadata: { ...EMPTY_STREAMING_METADATA },
     }));
 
-    // Auto-update title from first user message
     if (isFirstMessage) {
       const title =
         content.length > 100 ? content.slice(0, 100) + "..." : content;
-      void updateConversationTitle(convId, title).catch(() => {
-        // Title update is best-effort; don't block the message flow
-      });
+      void updateConversationTitle(convId, title).catch(() => {});
     }
 
     const callbacks: SSECallbacks = {
@@ -165,14 +164,49 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }));
       },
       onMessageStart: () => {
-        set({ streamingContent: "" });
+        set({
+          streamingContent: "",
+          streamingMetadata: { ...EMPTY_STREAMING_METADATA },
+        });
+      },
+      onSqlGenerated: (sql: string) => {
+        set((s) => ({
+          streamingMetadata: { ...s.streamingMetadata, sql },
+        }));
+      },
+      onQueryResult: (data: Record<string, unknown>) => {
+        set((s) => ({
+          streamingMetadata: { ...s.streamingMetadata, queryResult: data },
+        }));
+      },
+      onChartConfig: (config: Record<string, unknown>) => {
+        set((s) => ({
+          streamingMetadata: { ...s.streamingMetadata, chartConfig: config },
+        }));
       },
       onMessageEnd: (data: Record<string, unknown>) => {
+        const currentState = get();
+
+        // Merge streaming metadata into the message metadata
+        const sseMetadata = currentState.streamingMetadata;
+        const backendMetadata =
+          (data.metadata as Record<string, unknown> | null) ?? {};
+
+        const mergedMetadata: Record<string, unknown> = {
+          ...backendMetadata,
+        };
+        if (sseMetadata.sql) mergedMetadata.sql = sseMetadata.sql;
+        if (sseMetadata.queryResult)
+          mergedMetadata.query_result = sseMetadata.queryResult;
+        if (sseMetadata.chartConfig)
+          mergedMetadata.chart_config = sseMetadata.chartConfig;
+
         const assistantMessage: Message = {
           id: (data.message_id as string) ?? `msg-${Date.now()}`,
           role: "assistant",
-          content: get().streamingContent,
-          metadata: data.metadata as Record<string, unknown> | null ?? null,
+          content: currentState.streamingContent,
+          metadata:
+            Object.keys(mergedMetadata).length > 0 ? mergedMetadata : null,
           created_at: new Date().toISOString(),
         };
 
@@ -180,6 +214,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           messages: [...s.messages, assistantMessage],
           status: "idle",
           streamingContent: "",
+          streamingMetadata: { ...EMPTY_STREAMING_METADATA },
           abortController: null,
         }));
       },
@@ -197,17 +232,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   cancelStream: () => {
-    const { abortController, streamingContent } = get();
+    const { abortController, streamingContent, streamingMetadata } = get();
     if (abortController) {
       abortController.abort();
 
-      // If there was partial content, keep it as a message
       if (streamingContent) {
+        // Merge any partial metadata
+        const metadata: Record<string, unknown> = {};
+        if (streamingMetadata.sql) metadata.sql = streamingMetadata.sql;
+        if (streamingMetadata.queryResult)
+          metadata.query_result = streamingMetadata.queryResult;
+        if (streamingMetadata.chartConfig)
+          metadata.chart_config = streamingMetadata.chartConfig;
+
         const partialMessage: Message = {
           id: `partial-${Date.now()}`,
           role: "assistant",
           content: streamingContent,
-          metadata: null,
+          metadata: Object.keys(metadata).length > 0 ? metadata : null,
           created_at: new Date().toISOString(),
         };
         set((s) => ({
@@ -218,6 +260,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({
         status: "idle",
         streamingContent: "",
+        streamingMetadata: { ...EMPTY_STREAMING_METADATA },
         abortController: null,
       });
     }
@@ -234,6 +277,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       status: "idle",
       error: null,
       streamingContent: "",
+      streamingMetadata: { ...EMPTY_STREAMING_METADATA },
       abortController: null,
     });
   },

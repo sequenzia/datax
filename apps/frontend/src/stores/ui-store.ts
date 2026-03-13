@@ -1,43 +1,36 @@
 import { create } from "zustand";
 
-export type MobilePanel = "dashboard" | "chat" | "sql" | "settings";
-
 interface UIState {
   sidebarOpen: boolean;
-  chatPanelOpen: boolean;
-  chatPanelWidth: number;
-  activeMobilePanel: MobilePanel;
+  sidebarWidth: number;
+  /** Ratio of conversation list height (0-1) vs schema browser */
+  sidebarConversationRatio: number;
   toggleSidebar: () => void;
   setSidebarOpen: (open: boolean) => void;
-  toggleChatPanel: () => void;
-  setChatPanelOpen: (open: boolean) => void;
-  setChatPanelWidth: (width: number) => void;
-  setActiveMobilePanel: (panel: MobilePanel) => void;
+  setSidebarConversationRatio: (ratio: number) => void;
 }
 
-const MIN_CHAT_PANEL_WIDTH = 280;
-const MAX_CHAT_PANEL_WIDTH = 600;
-const DEFAULT_CHAT_PANEL_WIDTH = 380;
+const SIDEBAR_EXPANDED_WIDTH = 256; // w-64
+const SIDEBAR_COLLAPSED_WIDTH = 56; // w-14
 
 export const useUIStore = create<UIState>((set) => ({
   sidebarOpen: true,
-  chatPanelOpen: true,
-  chatPanelWidth: DEFAULT_CHAT_PANEL_WIDTH,
-  activeMobilePanel: "chat",
-  toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
-  setSidebarOpen: (open: boolean) => set({ sidebarOpen: open }),
-  toggleChatPanel: () =>
-    set((state) => ({ chatPanelOpen: !state.chatPanelOpen })),
-  setChatPanelOpen: (open: boolean) => set({ chatPanelOpen: open }),
-  setChatPanelWidth: (width: number) =>
+  sidebarWidth: SIDEBAR_EXPANDED_WIDTH,
+  sidebarConversationRatio: 0.6,
+  toggleSidebar: () =>
+    set((state) => ({
+      sidebarOpen: !state.sidebarOpen,
+      sidebarWidth: !state.sidebarOpen
+        ? SIDEBAR_EXPANDED_WIDTH
+        : SIDEBAR_COLLAPSED_WIDTH,
+    })),
+  setSidebarOpen: (open: boolean) =>
     set({
-      chatPanelWidth: Math.min(
-        MAX_CHAT_PANEL_WIDTH,
-        Math.max(MIN_CHAT_PANEL_WIDTH, width),
-      ),
+      sidebarOpen: open,
+      sidebarWidth: open ? SIDEBAR_EXPANDED_WIDTH : SIDEBAR_COLLAPSED_WIDTH,
     }),
-  setActiveMobilePanel: (panel: MobilePanel) =>
-    set({ activeMobilePanel: panel }),
+  setSidebarConversationRatio: (ratio: number) =>
+    set({ sidebarConversationRatio: Math.min(0.85, Math.max(0.15, ratio)) }),
 }));
 
-export { MIN_CHAT_PANEL_WIDTH, MAX_CHAT_PANEL_WIDTH, DEFAULT_CHAT_PANEL_WIDTH };
+export { SIDEBAR_EXPANDED_WIDTH, SIDEBAR_COLLAPSED_WIDTH };

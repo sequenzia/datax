@@ -119,16 +119,16 @@ describe("OnboardingWizard", () => {
       expect(screen.queryByTestId("prev-button")).not.toBeInTheDocument();
     });
 
-    it("upload link navigates to /datasets/upload", () => {
+    it("upload link navigates to /data", () => {
       renderWizard();
       const link = screen.getByTestId("upload-data-link");
-      expect(link).toHaveAttribute("href", "/datasets/upload");
+      expect(link).toHaveAttribute("href", "/data");
     });
 
-    it("connect link navigates to /connections/new", () => {
+    it("connect link navigates to /data", () => {
       renderWizard();
       const link = screen.getByTestId("connect-db-link");
-      expect(link).toHaveAttribute("href", "/connections/new");
+      expect(link).toHaveAttribute("href", "/data");
     });
   });
 

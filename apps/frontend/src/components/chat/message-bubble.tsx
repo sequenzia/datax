@@ -1,27 +1,36 @@
 import { User, Bot } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MarkdownContent } from "./markdown-content";
+import { InlineResultBlock } from "./inline-result-block";
 
 interface MessageBubbleProps {
   role: "user" | "assistant";
   content: string;
+  /** Message metadata containing SQL, query results, chart config etc. */
+  metadata?: Record<string, unknown> | null;
+  /** Streaming metadata (accumulated from SSE events during streaming) */
+  streamingMetadata?: {
+    sql: string | null;
+    queryResult: Record<string, unknown> | null;
+    chartConfig: Record<string, unknown> | null;
+  } | null;
   /** If true, show as streaming (used with StreamingText externally) */
   isStreaming?: boolean;
   children?: React.ReactNode;
 }
 
-/**
- * Renders a single chat message with role-appropriate styling.
- * User messages are right-aligned with plain text;
- * assistant messages left-aligned with markdown rendering.
- */
 export function MessageBubble({
   role,
   content,
+  metadata,
+  streamingMetadata,
   isStreaming = false,
   children,
 }: MessageBubbleProps) {
   const isUser = role === "user";
+
+  // Build effective metadata from either finalized metadata or streaming metadata
+  const effectiveMetadata = metadata ?? buildStreamingMeta(streamingMetadata);
 
   return (
     <div
@@ -50,7 +59,7 @@ export function MessageBubble({
       {/* Message content */}
       <div
         className={cn(
-          "max-w-[85%] rounded-lg px-3 py-2 text-sm",
+          "min-w-0 max-w-[85%] rounded-lg px-3 py-2 text-sm",
           isUser
             ? "bg-primary text-primary-foreground"
             : "bg-muted text-foreground",
@@ -64,7 +73,28 @@ export function MessageBubble({
           ) : (
             <MarkdownContent content={content} />
           ))}
+
+        {/* Inline result blocks for assistant messages */}
+        {!isUser && effectiveMetadata && (
+          <InlineResultBlock metadata={effectiveMetadata} />
+        )}
       </div>
     </div>
   );
+}
+
+/** Build a metadata-like object from streaming metadata for progressive rendering */
+function buildStreamingMeta(
+  streaming?: {
+    sql: string | null;
+    queryResult: Record<string, unknown> | null;
+    chartConfig: Record<string, unknown> | null;
+  } | null,
+): Record<string, unknown> | null {
+  if (!streaming) return null;
+  const meta: Record<string, unknown> = {};
+  if (streaming.sql) meta.sql = streaming.sql;
+  if (streaming.queryResult) meta.query_result = streaming.queryResult;
+  if (streaming.chartConfig) meta.chart_config = streaming.chartConfig;
+  return Object.keys(meta).length > 0 ? meta : null;
 }

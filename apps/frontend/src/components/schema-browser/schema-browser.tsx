@@ -20,6 +20,8 @@ import {
   Link2,
   AlertCircle,
   Loader2,
+  Copy,
+  Check,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useSchema } from "@/hooks/use-schema";
@@ -129,6 +131,30 @@ function ColumnBadge({
   );
 }
 
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      void navigator.clipboard.writeText(text).then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      });
+    },
+    [text],
+  );
+  return (
+    <button
+      onClick={handleCopy}
+      className="invisible shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground group-hover:visible"
+      aria-label={`Copy ${text}`}
+      data-testid={`copy-${text}`}
+    >
+      {copied ? <Check className="size-2.5 text-green-500" /> : <Copy className="size-2.5" />}
+    </button>
+  );
+}
+
 function ColumnRow({ column }: { column: SchemaColumnEntry }) {
   return (
     <div
@@ -140,6 +166,7 @@ function ColumnRow({ column }: { column: SchemaColumnEntry }) {
       <span className="shrink-0 text-[11px] text-muted-foreground">
         {column.type}
       </span>
+      <CopyButton text={column.name} />
       <div className="ml-auto flex items-center gap-1">
         {column.is_primary_key && <ColumnBadge label="PK" variant="pk" />}
         {column.foreign_key_ref && (
