@@ -92,7 +92,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Cancel any existing stream
     get().cancelStream();
 
-    persistConversationId(conversationId);
     set({
       conversationId,
       messages: [],
@@ -104,12 +103,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const detail: ConversationDetail =
         await fetchConversationDetail(conversationId);
+      persistConversationId(conversationId);
       set({
         messages: detail.messages,
         status: "idle",
       });
     } catch (err: unknown) {
+      persistConversationId(null);
       set({
+        conversationId: null,
         status: "error",
         error:
           err instanceof Error

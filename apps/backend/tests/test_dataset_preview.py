@@ -14,35 +14,28 @@ import os
 import tempfile
 import uuid
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import sessionmaker
 
-from app.api.v1.datasets import DatasetInfo
 from app.config import Settings
 from app.main import create_app
+from app.models.base import Base
 from app.models.dataset import DatasetStatus
+from app.models.orm import Dataset
 from app.services.duckdb_manager import DuckDBManager
 
 
-def _test_settings() -> Settings:
-    """Create test settings with required fields."""
-    env = {
-        "DATABASE_URL": "sqlite:///:memory:",
-        "DATAX_ENCRYPTION_KEY": "test-encryption-key",
-    }
-    with patch.dict(os.environ, env, clear=True):
-        return Settings()  # type: ignore[call-arg]
+DATASET_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+TABLE_NAME = "ds_test_preview"
 
 
 def _write_csv(path: Path, content: str) -> Path:
     path.write_text(content, encoding="utf-8")
     return path
-
-
-DATASET_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
-TABLE_NAME = "ds_test_preview"
 
 
 @pytest.fixture
@@ -53,6 +46,36 @@ def tmp_dir():
 
 
 @pytest.fixture
+def db_path():
+    """Create a temporary file for SQLite database."""
+    with tempfile.TemporaryDirectory() as d:
+        yield Path(d) / "test.db"
+
+
+@pytest.fixture
+def db_engine(db_path):
+    """Create a SQLite engine backed by a temp file with foreign key support."""
+    url = f"sqlite:///{db_path}"
+    engine = create_engine(url, connect_args={"check_same_thread": False})
+
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    Base.metadata.create_all(engine)
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture
+def session_factory(db_engine):
+    """Create a sessionmaker bound to the test engine."""
+    return sessionmaker(bind=db_engine, autocommit=False, autoflush=False)
+
+
+@pytest.fixture
 def duckdb_mgr():
     """Create a fresh in-memory DuckDB manager."""
     mgr = DuckDBManager()
@@ -60,36 +83,55 @@ def duckdb_mgr():
     mgr.close()
 
 
-@pytest.fixture
-def app_with_duckdb(duckdb_mgr):
-    """Create a FastAPI app with a real DuckDB manager attached."""
-    app = create_app(settings=_test_settings())
-    app.state.duckdb_manager = duckdb_mgr
-    return app
+def _test_settings(db_path: Path) -> Settings:
+    """Create test settings with required fields."""
+    env = {
+        "DATABASE_URL": f"sqlite:///{db_path}",
+        "DATAX_ENCRYPTION_KEY": "test-encryption-key",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        return Settings()  # type: ignore[call-arg]
 
 
 @pytest.fixture
-async def client(app_with_duckdb):
+def app(db_path, db_engine, session_factory, duckdb_mgr):
+    """Create a FastAPI app with test database and DuckDB manager attached."""
+    application = create_app(settings=_test_settings(db_path))
+    application.state.db_engine = db_engine
+    application.state.session_factory = session_factory
+    application.state.duckdb_manager = duckdb_mgr
+    return application
+
+
+@pytest.fixture
+async def client(app):
     """Create an async test client."""
-    transport = ASGITransport(app=app_with_duckdb)
+    transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as c:
         yield c
 
 
-def _mock_lookup(
+def _create_dataset(
+    session_factory: sessionmaker,
+    status: str = DatasetStatus.READY.value,
     dataset_id: uuid.UUID = DATASET_ID,
     table_name: str = TABLE_NAME,
-    status: str = DatasetStatus.READY.value,
-) -> AsyncMock:
-    """Create a mock for _lookup_dataset that returns a DatasetInfo."""
-    mock = AsyncMock(
-        return_value=DatasetInfo(
-            id=dataset_id,
-            duckdb_table_name=table_name,
-            status=status,
-        )
+) -> Dataset:
+    """Insert a Dataset row into the test database."""
+    session = session_factory()
+    dataset = Dataset(
+        id=dataset_id,
+        name="test_preview",
+        file_path="/tmp/test.csv",
+        file_format="csv",
+        file_size_bytes=100,
+        duckdb_table_name=table_name,
+        status=status,
     )
-    return mock
+    session.add(dataset)
+    session.commit()
+    session.close()
+    return dataset
 
 
 def _register_csv(duckdb_mgr: DuckDBManager, tmp_dir: Path, content: str) -> None:
@@ -108,12 +150,12 @@ class TestPagination:
     """Test pagination returns correct slices."""
 
     @pytest.mark.asyncio
-    async def test_default_pagination(self, client, duckdb_mgr, tmp_dir) -> None:
+    async def test_default_pagination(self, client, session_factory, duckdb_mgr, tmp_dir) -> None:
         """Default offset=0, limit=100 returns all rows when fewer than limit."""
+        _create_dataset(session_factory)
         _register_csv(duckdb_mgr, tmp_dir, "id,name\n1,Alice\n2,Bob\n3,Carol\n")
 
-        with patch("app.api.v1.datasets._lookup_dataset", _mock_lookup()):
-            response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
+        response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
 
         assert response.status_code == 200
         body = response.json()
@@ -123,15 +165,15 @@ class TestPagination:
         assert len(body["rows"]) == 3
 
     @pytest.mark.asyncio
-    async def test_custom_offset_and_limit(self, client, duckdb_mgr, tmp_dir) -> None:
+    async def test_custom_offset_and_limit(self, client, session_factory, duckdb_mgr, tmp_dir) -> None:
         """Custom offset and limit return correct slice."""
+        _create_dataset(session_factory)
         rows = "id,name\n" + "\n".join(f"{i},Name{i}" for i in range(10)) + "\n"
         _register_csv(duckdb_mgr, tmp_dir, rows)
 
-        with patch("app.api.v1.datasets._lookup_dataset", _mock_lookup()):
-            response = await client.get(
-                f"/api/v1/datasets/{DATASET_ID}/preview?offset=3&limit=4"
-            )
+        response = await client.get(
+            f"/api/v1/datasets/{DATASET_ID}/preview?offset=3&limit=4"
+        )
 
         assert response.status_code == 200
         body = response.json()
@@ -141,15 +183,15 @@ class TestPagination:
         assert len(body["rows"]) == 4
 
     @pytest.mark.asyncio
-    async def test_offset_clips_to_remaining(self, client, duckdb_mgr, tmp_dir) -> None:
+    async def test_offset_clips_to_remaining(self, client, session_factory, duckdb_mgr, tmp_dir) -> None:
         """Offset near end returns only remaining rows."""
+        _create_dataset(session_factory)
         rows = "id\n" + "\n".join(str(i) for i in range(5)) + "\n"
         _register_csv(duckdb_mgr, tmp_dir, rows)
 
-        with patch("app.api.v1.datasets._lookup_dataset", _mock_lookup()):
-            response = await client.get(
-                f"/api/v1/datasets/{DATASET_ID}/preview?offset=3&limit=100"
-            )
+        response = await client.get(
+            f"/api/v1/datasets/{DATASET_ID}/preview?offset=3&limit=100"
+        )
 
         assert response.status_code == 200
         body = response.json()
@@ -157,24 +199,24 @@ class TestPagination:
         assert len(body["rows"]) == 2
 
     @pytest.mark.asyncio
-    async def test_columns_match_table_schema(self, client, duckdb_mgr, tmp_dir) -> None:
+    async def test_columns_match_table_schema(self, client, session_factory, duckdb_mgr, tmp_dir) -> None:
         """Columns array matches the actual table schema."""
+        _create_dataset(session_factory)
         _register_csv(duckdb_mgr, tmp_dir, "id,name,age,score\n1,Alice,30,95.5\n")
 
-        with patch("app.api.v1.datasets._lookup_dataset", _mock_lookup()):
-            response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
+        response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
 
         assert response.status_code == 200
         body = response.json()
         assert body["columns"] == ["id", "name", "age", "score"]
 
     @pytest.mark.asyncio
-    async def test_rows_in_correct_column_order(self, client, duckdb_mgr, tmp_dir) -> None:
+    async def test_rows_in_correct_column_order(self, client, session_factory, duckdb_mgr, tmp_dir) -> None:
         """Row values are in the same order as the columns array."""
+        _create_dataset(session_factory)
         _register_csv(duckdb_mgr, tmp_dir, "id,name,age\n1,Alice,30\n")
 
-        with patch("app.api.v1.datasets._lookup_dataset", _mock_lookup()):
-            response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
+        response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
 
         body = response.json()
         columns = body["columns"]
@@ -188,15 +230,15 @@ class TestPagination:
         assert row[age_idx] == 30
 
     @pytest.mark.asyncio
-    async def test_total_rows_reflects_actual_count(self, client, duckdb_mgr, tmp_dir) -> None:
+    async def test_total_rows_reflects_actual_count(self, client, session_factory, duckdb_mgr, tmp_dir) -> None:
         """total_rows reflects the full table row count regardless of pagination."""
+        _create_dataset(session_factory)
         rows = "v\n" + "\n".join(str(i) for i in range(50)) + "\n"
         _register_csv(duckdb_mgr, tmp_dir, rows)
 
-        with patch("app.api.v1.datasets._lookup_dataset", _mock_lookup()):
-            response = await client.get(
-                f"/api/v1/datasets/{DATASET_ID}/preview?offset=0&limit=5"
-            )
+        response = await client.get(
+            f"/api/v1/datasets/{DATASET_ID}/preview?offset=0&limit=5"
+        )
 
         body = response.json()
         assert body["total_rows"] == 50
@@ -212,44 +254,44 @@ class TestSorting:
     """Test sorting produces correctly ordered results."""
 
     @pytest.mark.asyncio
-    async def test_sort_ascending(self, client, duckdb_mgr, tmp_dir) -> None:
+    async def test_sort_ascending(self, client, session_factory, duckdb_mgr, tmp_dir) -> None:
         """Sorting by a column in ascending order."""
+        _create_dataset(session_factory)
         _register_csv(duckdb_mgr, tmp_dir, "name,score\nCharlie,70\nAlice,90\nBob,80\n")
 
-        with patch("app.api.v1.datasets._lookup_dataset", _mock_lookup()):
-            response = await client.get(
-                f"/api/v1/datasets/{DATASET_ID}/preview?sort_by=name&sort_order=asc"
-            )
+        response = await client.get(
+            f"/api/v1/datasets/{DATASET_ID}/preview?sort_by=name&sort_order=asc"
+        )
 
         body = response.json()
         names = [row[body["columns"].index("name")] for row in body["rows"]]
         assert names == ["Alice", "Bob", "Charlie"]
 
     @pytest.mark.asyncio
-    async def test_sort_descending(self, client, duckdb_mgr, tmp_dir) -> None:
+    async def test_sort_descending(self, client, session_factory, duckdb_mgr, tmp_dir) -> None:
         """Sorting by a column in descending order."""
+        _create_dataset(session_factory)
         _register_csv(duckdb_mgr, tmp_dir, "name,score\nCharlie,70\nAlice,90\nBob,80\n")
 
-        with patch("app.api.v1.datasets._lookup_dataset", _mock_lookup()):
-            response = await client.get(
-                f"/api/v1/datasets/{DATASET_ID}/preview?sort_by=score&sort_order=desc"
-            )
+        response = await client.get(
+            f"/api/v1/datasets/{DATASET_ID}/preview?sort_by=score&sort_order=desc"
+        )
 
         body = response.json()
         scores = [row[body["columns"].index("score")] for row in body["rows"]]
         assert scores == [90, 80, 70]
 
     @pytest.mark.asyncio
-    async def test_sort_with_pagination(self, client, duckdb_mgr, tmp_dir) -> None:
+    async def test_sort_with_pagination(self, client, session_factory, duckdb_mgr, tmp_dir) -> None:
         """Sorting combined with pagination returns correct slice."""
+        _create_dataset(session_factory)
         content = "id,val\n" + "\n".join(f"{i},{100-i}" for i in range(10)) + "\n"
         _register_csv(duckdb_mgr, tmp_dir, content)
 
-        with patch("app.api.v1.datasets._lookup_dataset", _mock_lookup()):
-            response = await client.get(
-                f"/api/v1/datasets/{DATASET_ID}/preview"
-                "?sort_by=val&sort_order=asc&offset=0&limit=3"
-            )
+        response = await client.get(
+            f"/api/v1/datasets/{DATASET_ID}/preview"
+            "?sort_by=val&sort_order=asc&offset=0&limit=3"
+        )
 
         body = response.json()
         vals = [row[body["columns"].index("val")] for row in body["rows"]]
@@ -267,12 +309,12 @@ class TestColumnTypes:
     """Test that column types are preserved in the response."""
 
     @pytest.mark.asyncio
-    async def test_integer_types_preserved(self, client, duckdb_mgr, tmp_dir) -> None:
+    async def test_integer_types_preserved(self, client, session_factory, duckdb_mgr, tmp_dir) -> None:
         """Integer values are returned as integers, not strings."""
+        _create_dataset(session_factory)
         _register_csv(duckdb_mgr, tmp_dir, "id,count\n1,100\n2,200\n")
 
-        with patch("app.api.v1.datasets._lookup_dataset", _mock_lookup()):
-            response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
+        response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
 
         body = response.json()
         for row in body["rows"]:
@@ -280,37 +322,37 @@ class TestColumnTypes:
             assert isinstance(row[1], int)
 
     @pytest.mark.asyncio
-    async def test_float_types_preserved(self, client, duckdb_mgr, tmp_dir) -> None:
+    async def test_float_types_preserved(self, client, session_factory, duckdb_mgr, tmp_dir) -> None:
         """Float values are returned as floats."""
+        _create_dataset(session_factory)
         _register_csv(duckdb_mgr, tmp_dir, "val\n3.14\n2.71\n")
 
-        with patch("app.api.v1.datasets._lookup_dataset", _mock_lookup()):
-            response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
+        response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
 
         body = response.json()
         for row in body["rows"]:
             assert isinstance(row[0], float)
 
     @pytest.mark.asyncio
-    async def test_string_types_preserved(self, client, duckdb_mgr, tmp_dir) -> None:
+    async def test_string_types_preserved(self, client, session_factory, duckdb_mgr, tmp_dir) -> None:
         """String values are returned as strings."""
+        _create_dataset(session_factory)
         _register_csv(duckdb_mgr, tmp_dir, "name\nAlice\nBob\n")
 
-        with patch("app.api.v1.datasets._lookup_dataset", _mock_lookup()):
-            response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
+        response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
 
         body = response.json()
         for row in body["rows"]:
             assert isinstance(row[0], str)
 
     @pytest.mark.asyncio
-    async def test_null_values_preserved(self, client, duckdb_mgr, tmp_dir) -> None:
+    async def test_null_values_preserved(self, client, session_factory, duckdb_mgr, tmp_dir) -> None:
         """NULL values are returned as null/None."""
+        _create_dataset(session_factory)
         # DuckDB treats empty CSV fields as NULL for numeric types
         _register_csv(duckdb_mgr, tmp_dir, "id,value\n1,100\n2,\n")
 
-        with patch("app.api.v1.datasets._lookup_dataset", _mock_lookup()):
-            response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
+        response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
 
         body = response.json()
         # Second row should have None for the value column
@@ -328,15 +370,15 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_offset_beyond_total_returns_empty(
-        self, client, duckdb_mgr, tmp_dir
+        self, client, session_factory, duckdb_mgr, tmp_dir
     ) -> None:
         """Offset beyond total rows returns empty rows array."""
+        _create_dataset(session_factory)
         _register_csv(duckdb_mgr, tmp_dir, "id\n1\n2\n3\n")
 
-        with patch("app.api.v1.datasets._lookup_dataset", _mock_lookup()):
-            response = await client.get(
-                f"/api/v1/datasets/{DATASET_ID}/preview?offset=100"
-            )
+        response = await client.get(
+            f"/api/v1/datasets/{DATASET_ID}/preview?offset=100"
+        )
 
         assert response.status_code == 200
         body = response.json()
@@ -344,14 +386,14 @@ class TestEdgeCases:
         assert body["total_rows"] == 3
 
     @pytest.mark.asyncio
-    async def test_limit_zero_returns_no_rows(self, client, duckdb_mgr, tmp_dir) -> None:
+    async def test_limit_zero_returns_no_rows(self, client, session_factory, duckdb_mgr, tmp_dir) -> None:
         """Limit of 0 returns no rows but includes total_rows."""
+        _create_dataset(session_factory)
         _register_csv(duckdb_mgr, tmp_dir, "id\n1\n2\n3\n")
 
-        with patch("app.api.v1.datasets._lookup_dataset", _mock_lookup()):
-            response = await client.get(
-                f"/api/v1/datasets/{DATASET_ID}/preview?limit=0"
-            )
+        response = await client.get(
+            f"/api/v1/datasets/{DATASET_ID}/preview?limit=0"
+        )
 
         assert response.status_code == 200
         body = response.json()
@@ -361,15 +403,15 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_nonexistent_sort_column_returns_400(
-        self, client, duckdb_mgr, tmp_dir
+        self, client, session_factory, duckdb_mgr, tmp_dir
     ) -> None:
         """sort_by with non-existent column returns 400."""
+        _create_dataset(session_factory)
         _register_csv(duckdb_mgr, tmp_dir, "id,name\n1,Alice\n")
 
-        with patch("app.api.v1.datasets._lookup_dataset", _mock_lookup()):
-            response = await client.get(
-                f"/api/v1/datasets/{DATASET_ID}/preview?sort_by=nonexistent"
-            )
+        response = await client.get(
+            f"/api/v1/datasets/{DATASET_ID}/preview?sort_by=nonexistent"
+        )
 
         assert response.status_code == 400
         body = response.json()
@@ -378,13 +420,13 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_empty_dataset_returns_empty_rows(
-        self, client, duckdb_mgr, tmp_dir
+        self, client, session_factory, duckdb_mgr, tmp_dir
     ) -> None:
         """Dataset with 0 rows returns empty rows array."""
+        _create_dataset(session_factory)
         _register_csv(duckdb_mgr, tmp_dir, "id,name,value\n")
 
-        with patch("app.api.v1.datasets._lookup_dataset", _mock_lookup()):
-            response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
+        response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
 
         assert response.status_code == 200
         body = response.json()
@@ -394,16 +436,16 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_wide_table_returns_all_columns(
-        self, client, duckdb_mgr, tmp_dir
+        self, client, session_factory, duckdb_mgr, tmp_dir
     ) -> None:
         """Very wide table (500+ columns) returns all columns."""
+        _create_dataset(session_factory)
         num_cols = 501
         headers = ",".join(f"col{i}" for i in range(num_cols))
         values = ",".join(str(i) for i in range(num_cols))
         _register_csv(duckdb_mgr, tmp_dir, f"{headers}\n{values}\n")
 
-        with patch("app.api.v1.datasets._lookup_dataset", _mock_lookup()):
-            response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
+        response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
 
         assert response.status_code == 200
         body = response.json()
@@ -425,7 +467,6 @@ class TestErrorHandling:
         """Non-existent dataset returns 404."""
         missing_id = uuid.uuid4()
 
-        # Default _lookup_dataset raises 404
         response = await client.get(f"/api/v1/datasets/{missing_id}/preview")
 
         assert response.status_code == 404
@@ -434,13 +475,12 @@ class TestErrorHandling:
 
     @pytest.mark.asyncio
     async def test_dataset_not_ready_returns_409(
-        self, client, duckdb_mgr, tmp_dir
+        self, client, session_factory
     ) -> None:
         """Dataset not in 'ready' status returns 409 with status info."""
-        mock = _mock_lookup(status=DatasetStatus.PROCESSING.value)
+        _create_dataset(session_factory, status=DatasetStatus.PROCESSING.value)
 
-        with patch("app.api.v1.datasets._lookup_dataset", mock):
-            response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
+        response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
 
         assert response.status_code == 409
         body = response.json()
@@ -449,39 +489,37 @@ class TestErrorHandling:
 
     @pytest.mark.asyncio
     async def test_dataset_error_status_returns_409(
-        self, client, duckdb_mgr, tmp_dir
+        self, client, session_factory
     ) -> None:
         """Dataset in 'error' status returns 409."""
-        mock = _mock_lookup(status=DatasetStatus.ERROR.value)
+        _create_dataset(session_factory, status=DatasetStatus.ERROR.value)
 
-        with patch("app.api.v1.datasets._lookup_dataset", mock):
-            response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
+        response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
 
         assert response.status_code == 409
         body = response.json()
         assert "error" in body
 
     @pytest.mark.asyncio
-    async def test_unregistered_table_returns_500(self, client) -> None:
+    async def test_unregistered_table_returns_500(self, client, session_factory) -> None:
         """DuckDB table not registered returns 500."""
-        mock = _mock_lookup(table_name="ds_nonexistent_table")
+        _create_dataset(session_factory, table_name="ds_nonexistent_table")
 
-        with patch("app.api.v1.datasets._lookup_dataset", mock):
-            response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
+        response = await client.get(f"/api/v1/datasets/{DATASET_ID}/preview")
 
         assert response.status_code == 500
         body = response.json()
         assert "error" in body
 
     @pytest.mark.asyncio
-    async def test_invalid_sort_order_returns_422(self, client, duckdb_mgr, tmp_dir) -> None:
+    async def test_invalid_sort_order_returns_422(self, client, session_factory, duckdb_mgr, tmp_dir) -> None:
         """Invalid sort_order value returns 422 validation error."""
+        _create_dataset(session_factory)
         _register_csv(duckdb_mgr, tmp_dir, "id\n1\n")
 
-        with patch("app.api.v1.datasets._lookup_dataset", _mock_lookup()):
-            response = await client.get(
-                f"/api/v1/datasets/{DATASET_ID}/preview?sort_order=invalid"
-            )
+        response = await client.get(
+            f"/api/v1/datasets/{DATASET_ID}/preview?sort_order=invalid"
+        )
 
         assert response.status_code == 422
 

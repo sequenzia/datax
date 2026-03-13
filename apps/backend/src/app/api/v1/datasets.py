@@ -7,7 +7,6 @@ and sorting for uploaded datasets.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -396,22 +395,14 @@ def delete_dataset(
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class DatasetInfo:
-    """Minimal dataset metadata needed by the preview endpoint."""
-
-    id: UUID
-    duckdb_table_name: str
-    status: str
-
-
 @router.get("/{dataset_id}/preview")
-async def get_dataset_preview(
+def get_dataset_preview(
     dataset_id: UUID,
     offset: int = Query(default=0, ge=0, description="Row offset for pagination"),
     limit: int = Query(default=100, ge=0, description="Max rows to return"),
     sort_by: str | None = Query(default=None, description="Column name to sort by"),
     sort_order: str = Query(default="asc", pattern="^(asc|desc)$", description="Sort direction"),
+    db: Session = Depends(get_db),
     duckdb_mgr: DuckDBManager = Depends(get_duckdb_manager),
 ) -> dict[str, Any]:
     """Return a paginated, sortable preview of a dataset's data.
@@ -419,30 +410,28 @@ async def get_dataset_preview(
     Queries the DuckDB virtual table associated with the dataset and returns
     column names and row data as arrays for efficiency.
     """
-    dataset = await _lookup_dataset(dataset_id)
+    dataset = db.get(Dataset, dataset_id)
+
+    if dataset is None:
+        raise AppError(
+            code="NOT_FOUND",
+            message=f"Dataset {dataset_id} not found",
+            status_code=404,
+        )
 
     if dataset.status != DatasetStatus.READY.value:
-        raise HTTPException(
+        raise AppError(
+            code="DATASET_NOT_READY",
+            message=f"Dataset is not ready for preview. Current status: {dataset.status}",
             status_code=409,
-            detail=f"Dataset is not ready for preview. Current status: {dataset.status}",
         )
 
     return _build_preview(duckdb_mgr, dataset, offset, limit, sort_by, sort_order)
 
 
-async def _lookup_dataset(dataset_id: UUID) -> DatasetInfo:
-    """Look up a dataset by ID from the database.
-
-    This function will be replaced with a proper PostgreSQL query once the
-    database session infrastructure is wired up. For now, the endpoint tests
-    mock this function directly.
-    """
-    raise HTTPException(status_code=404, detail=f"Dataset {dataset_id} not found")
-
-
 def _build_preview(
     duckdb_mgr: DuckDBManager,
-    dataset: DatasetInfo,
+    dataset: Dataset,
     offset: int,
     limit: int,
     sort_by: str | None,
