@@ -408,14 +408,16 @@ provides-extras = ["dev"]
 [[package]]
 name = "datax-docs"
 version = "0.1.0"
-source = { editable = "docs" }
+source = { virtual = "docs" }
 dependencies = [
+    { name = "mkdocs" },
     { name = "mkdocs-material" },
     { name = "pymdown-extensions" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "mkdocs", specifier = ">=1.6,<2" },
     { name = "mkdocs-material" },
     { name = "pymdown-extensions" },
 ]

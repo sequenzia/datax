@@ -487,5 +487,5 @@ For each resolved provider, `_resolve_api_key()` determines the API key:
 
 ## Related Pages
 
-- [Architecture](architecture.md) — System-level overview of how the AI pipeline fits into the broader DataX architecture
-- [API Reference](api-reference.md) — Endpoint details including the SSE streaming contract
+- [Architecture](overview.md) — System-level overview of how the AI pipeline fits into the broader DataX architecture
+- [API Reference](../reference/api-reference.md) — Endpoint details including the SSE streaming contract

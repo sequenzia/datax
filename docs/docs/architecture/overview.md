@@ -508,4 +508,4 @@ datax/
 
 - **[AI Pipeline](ai-pipeline.md)** — Deep dive into the NL-to-SQL agent, self-correction loop, prompt engineering, and chart generation
 - **[Frontend](frontend.md)** — Component architecture, state management patterns, SSE streaming implementation, and responsive layout system
-- **[API Reference](api-reference.md)** — Complete endpoint documentation with request/response schemas
+- **[API Reference](../reference/api-reference.md)** — Complete endpoint documentation with request/response schemas

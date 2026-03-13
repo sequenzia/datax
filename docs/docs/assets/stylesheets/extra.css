@@ -1,1 +1,40 @@
 /* Custom styles for DataX docs */
+
+/* Mermaid dark-mode diagram fix.
+   Material renders Mermaid SVGs in a closed Shadow DOM — external CSS
+   selectors can't reach inside. Instead, Material reads --md-mermaid-*
+   custom properties and passes them to mermaid.initialize() as
+   themeVariables before generating the SVG.
+
+   In slate mode the defaults produce light/orange text that's invisible
+   on our diagrams' light pastel fills. These overrides force dark text
+   on light backgrounds. Diagrams with inline style directives
+   (fill:#...,color:#000) override themeVariables, so they're unaffected. */
+
+[data-md-color-scheme="slate"] {
+  /* Flowchart / graph nodes */
+  --md-mermaid-node-bg-color: #e0e0e0;
+  --md-mermaid-node-fg-color: #000;
+
+  /* Sequence diagram */
+  --md-mermaid-sequence-actor-bg-color: #e0e0e0;
+  --md-mermaid-sequence-actor-fg-color: #000;
+  --md-mermaid-sequence-actor-border-color: #9e9e9e;
+  --md-mermaid-sequence-actor-line-color: #9e9e9e;
+  --md-mermaid-sequence-actorman-bg-color: #e0e0e0;
+  --md-mermaid-sequence-actorman-line-color: #9e9e9e;
+  --md-mermaid-sequence-box-bg-color: hsla(0, 0%, 88%, 0.25);
+  --md-mermaid-sequence-box-fg-color: #000;
+  --md-mermaid-sequence-label-bg-color: #e0e0e0;
+  --md-mermaid-sequence-label-fg-color: #000;
+  --md-mermaid-sequence-loop-bg-color: hsla(0, 0%, 88%, 0.25);
+  --md-mermaid-sequence-loop-border-color: #9e9e9e;
+  --md-mermaid-sequence-loop-fg-color: #000;
+  --md-mermaid-sequence-message-fg-color: #000;
+  --md-mermaid-sequence-message-line-color: #9e9e9e;
+  --md-mermaid-sequence-note-bg-color: #fff9c4;
+  --md-mermaid-sequence-note-border-color: #f9a825;
+  --md-mermaid-sequence-note-fg-color: #000;
+  --md-mermaid-sequence-number-bg-color: #9e9e9e;
+  --md-mermaid-sequence-number-fg-color: #000;
+}

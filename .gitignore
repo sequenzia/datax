@@ -24,3 +24,5 @@ dist/
 
 # Claude
 .claude/sessions/
+
+site/

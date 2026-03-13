@@ -130,7 +130,7 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
       **Never use this key in production.**
 
 For more details on the encryption implementation, see the
-[Security](security.md) page.
+[Security](../reference/security.md) page.
 
 ---
 
@@ -262,7 +262,7 @@ DATAX_ENCRYPTION_KEY=dev-only_ulHPfBdOTM5i8oPZdpi9S0X-di0ON2QNlMSK1J0LN8Y=
 
 ## Related Pages
 
-- [Security](security.md) — encryption implementation, API key storage, and
+- [Security](../reference/security.md) — encryption implementation, API key storage, and
   read-only query enforcement
-- [Deployment](deployment.md) — Docker Compose setup, production configuration,
+- [Deployment](../guides/deployment.md) — Docker Compose setup, production configuration,
   and scaling considerations

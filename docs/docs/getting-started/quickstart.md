@@ -211,5 +211,5 @@ The AI agent generates SQL, executes it against your data, and returns results w
 ## What's Next?
 
 - **[Configuration](configuration.md)** — Full reference for all environment variables and settings
-- **[Development](development.md)** — Dev workflow, testing, linting, and contributing
-- **[Architecture](architecture.md)** — How the backend, frontend, and AI pipeline fit together
+- **[Development](../guides/development.md)** — Dev workflow, testing, linting, and contributing
+- **[Architecture](../architecture/overview.md)** — How the backend, frontend, and AI pipeline fit together

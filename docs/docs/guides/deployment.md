@@ -125,12 +125,12 @@ backend:
 !!! danger "Never use the default encryption key outside development"
     The `DATAX_ENCRYPTION_KEY` default is embedded in `docker-compose.yml`
     and is public. Any deployment beyond local development **must** generate
-    a unique Fernet key. See [Configuration — Encryption Key](configuration.md#encryption-key)
+    a unique Fernet key. See [Configuration — Encryption Key](../getting-started/configuration.md#encryption-key)
     for generation instructions.
 
 For the full list of environment variables — including AI provider keys,
 storage paths, and query tuning — see the
-[Configuration](configuration.md) reference.
+[Configuration](../getting-started/configuration.md) reference.
 
 ## Database Migrations
 
@@ -297,7 +297,7 @@ changes are required before deploying to production.
     the public internet without adding an authentication layer (reverse
     proxy with auth, OAuth2, etc.).
 
-- **Encryption key:** The default `DATAX_ENCRYPTION_KEY` is public. Generate a real Fernet key for any non-local deployment. See [Configuration](configuration.md).
+- **Encryption key:** The default `DATAX_ENCRYPTION_KEY` is public. Generate a real Fernet key for any non-local deployment. See [Configuration](../getting-started/configuration.md).
 - **CORS:** The default `CORS_ORIGINS` allows `http://localhost:5173`. Update this to match your production domain.
 - **Database credentials:** The default PostgreSQL user/password (`datax`/`datax`) must be changed.
 
@@ -349,7 +349,7 @@ If you need multiple backend instances:
 Use this checklist before deploying DataX outside a local development
 environment:
 
-- [ ] **Encryption key** — Generate a unique `DATAX_ENCRYPTION_KEY` ([how-to](configuration.md#encryption-key))
+- [ ] **Encryption key** — Generate a unique `DATAX_ENCRYPTION_KEY` ([how-to](../getting-started/configuration.md#encryption-key))
 - [ ] **Database credentials** — Use strong PostgreSQL credentials, not the defaults
 - [ ] **Multi-stage Dockerfiles** — Build production images without dev dependencies or hot-reload
 - [ ] **Frontend static build** — Serve `pnpm build` output via nginx or CDN, not `pnpm dev`

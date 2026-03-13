@@ -156,20 +156,20 @@ graph LR
 
 | Section | What you'll find |
 |---|---|
-| [Getting Started](getting-started.md) | Installation, setup, and running DataX locally |
+| [Getting Started](getting-started/quickstart.md) | Installation, setup, and running DataX locally |
 | **Architecture** | |
-| &nbsp;&nbsp;&nbsp;&nbsp;[Overview](architecture.md) | System design, component relationships, and data flow |
-| &nbsp;&nbsp;&nbsp;&nbsp;[AI Pipeline](ai-pipeline.md) | Agent architecture, prompt design, SQL generation, and self-correction |
-| &nbsp;&nbsp;&nbsp;&nbsp;[Frontend](frontend.md) | React component tree, state management, and UI patterns |
+| &nbsp;&nbsp;&nbsp;&nbsp;[Overview](architecture/overview.md) | System design, component relationships, and data flow |
+| &nbsp;&nbsp;&nbsp;&nbsp;[AI Pipeline](architecture/ai-pipeline.md) | Agent architecture, prompt design, SQL generation, and self-correction |
+| &nbsp;&nbsp;&nbsp;&nbsp;[Frontend](architecture/frontend.md) | React component tree, state management, and UI patterns |
 | **Reference** | |
-| &nbsp;&nbsp;&nbsp;&nbsp;[API Reference](api-reference.md) | All 33 REST endpoints with request/response schemas |
-| &nbsp;&nbsp;&nbsp;&nbsp;[Data Models](data-models.md) | ORM models, relationships, and database schema |
-| &nbsp;&nbsp;&nbsp;&nbsp;[Configuration](configuration.md) | Environment variables, settings, and provider setup |
-| &nbsp;&nbsp;&nbsp;&nbsp;[Security](security.md) | Encryption, read-only queries, and credential handling |
+| &nbsp;&nbsp;&nbsp;&nbsp;[API Reference](reference/api-reference.md) | All 33 REST endpoints with request/response schemas |
+| &nbsp;&nbsp;&nbsp;&nbsp;[Data Models](reference/data-models.md) | ORM models, relationships, and database schema |
+| &nbsp;&nbsp;&nbsp;&nbsp;[Configuration](getting-started/configuration.md) | Environment variables, settings, and provider setup |
+| &nbsp;&nbsp;&nbsp;&nbsp;[Security](reference/security.md) | Encryption, read-only queries, and credential handling |
 | **Guides** | |
-| &nbsp;&nbsp;&nbsp;&nbsp;[Development](development.md) | Local development workflow, code standards, and tooling |
-| &nbsp;&nbsp;&nbsp;&nbsp;[Deployment](deployment.md) | Docker Compose deployment and production configuration |
-| &nbsp;&nbsp;&nbsp;&nbsp;[Testing](testing.md) | Test strategy, running tests, and writing new tests |
+| &nbsp;&nbsp;&nbsp;&nbsp;[Development](guides/development.md) | Local development workflow, code standards, and tooling |
+| &nbsp;&nbsp;&nbsp;&nbsp;[Deployment](guides/deployment.md) | Docker Compose deployment and production configuration |
+| &nbsp;&nbsp;&nbsp;&nbsp;[Testing](guides/testing.md) | Test strategy, running tests, and writing new tests |
 
 ---
 
@@ -190,7 +190,7 @@ graph LR
     cd apps/frontend && pnpm install && pnpm dev         # UI on :5173
     ```
 
-    See the [Getting Started](getting-started.md) guide for detailed setup instructions, including AI provider configuration.
+    See the [Getting Started](getting-started/quickstart.md) guide for detailed setup instructions, including AI provider configuration.
 
 ---
 

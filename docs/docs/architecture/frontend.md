@@ -569,4 +569,4 @@ apps/frontend/src/
 
 ## Related Pages
 
-- [API Reference](api-reference.md) — Backend REST + SSE endpoint documentation
+- [API Reference](../reference/api-reference.md) — Backend REST + SSE endpoint documentation

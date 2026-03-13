@@ -249,7 +249,7 @@ app.add_middleware(
 The default restricts access to the Vite dev server. For production, set `CORS_ORIGINS` to your frontend's deployed URL.
 
 !!! warning "Production CORS"
-    Never use `*` as a CORS origin in production. Always specify the exact frontend origin(s) to prevent unauthorized cross-origin API access. See [Configuration](configuration.md) for environment variable details.
+    Never use `*` as a CORS origin in production. Always specify the exact frontend origin(s) to prevent unauthorized cross-origin API access. See [Configuration](../getting-started/configuration.md) for environment variable details.
 
 ---
 

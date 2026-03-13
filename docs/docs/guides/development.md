@@ -43,7 +43,7 @@ This guide covers everything you need to set up, build, test, and contribute to 
     cp .env.example .env.local
     ```
 
-    Edit `.env.local` with your settings. See [Configuration](configuration.md) for the full variable reference. The minimum required variables are:
+    Edit `.env.local` with your settings. See [Configuration](../getting-started/configuration.md) for the full variable reference. The minimum required variables are:
 
     | Variable | Description |
     |----------|-------------|
