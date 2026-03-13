@@ -114,8 +114,9 @@ export function fetchConnectionSchema(
   return apiFetch<ConnectionDetail>(`/connections/${connectionId}`);
 }
 
-export function fetchConversations(): Promise<Conversation[]> {
-  return apiFetch<Conversation[]>("/conversations");
+export async function fetchConversations(): Promise<Conversation[]> {
+  const data = await apiFetch<{ conversations: Conversation[] }>("/conversations");
+  return data.conversations;
 }
 
 export function fetchConversationsPaginated(params: {

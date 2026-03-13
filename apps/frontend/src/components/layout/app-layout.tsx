@@ -1,6 +1,16 @@
+import { Suspense } from "react";
 import { Outlet } from "react-router-dom";
 import { Sidebar } from "@/components/layout/sidebar";
+import { ErrorBoundary } from "@/components/error-boundary";
 import { OnboardingWizard } from "@/components/onboarding/onboarding-wizard";
+
+function PageLoader() {
+  return (
+    <div className="flex flex-1 items-center justify-center p-6">
+      <p className="text-sm text-muted-foreground">Loading...</p>
+    </div>
+  );
+}
 
 export function AppLayout() {
   return (
@@ -10,7 +20,11 @@ export function AppLayout() {
     >
       <Sidebar />
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <Outlet />
+        <ErrorBoundary>
+          <Suspense fallback={<PageLoader />}>
+            <Outlet />
+          </Suspense>
+        </ErrorBoundary>
       </main>
       <OnboardingWizard />
     </div>
