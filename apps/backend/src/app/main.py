@@ -1,6 +1,8 @@
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -56,6 +58,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     logger = get_logger(__name__)
 
     if settings is None:
+        # Load .env files into os.environ so modules that read os.environ
+        # directly (encryption, provider_service) see the values.
+        # override=False means real env vars take precedence.
+        project_root = Path(__file__).resolve().parents[4]
+        load_dotenv(project_root / ".env", override=False)
+        load_dotenv(project_root / ".env.local", override=False)
         settings = get_settings()
 
     app = FastAPI(
