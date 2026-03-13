@@ -10,7 +10,7 @@ The full spec lives at `internal/specs/datax-SPEC.md`. The spec analysis (open f
 
 ## Architecture
 
-**Two-language monorepo**: Python backend + TypeScript/React frontend, connected via REST + SSE.
+**Workspace-based monorepo**: Python backend + TypeScript/React frontend in `apps/`, shared packages in `packages/`, infrastructure in `infra/`. Connected via REST + SSE.
 
 ### Backend (Python / FastAPI)
 - **FastAPI** server with async endpoints and SSE streaming for chat
@@ -51,7 +51,7 @@ All entities include a nullable `user_id` field for future multi-user support (N
 
 ### Python Backend
 ```bash
-cd backend
+cd apps/backend
 uv sync                          # Install dependencies
 uv run fastapi dev               # Dev server with hot reload
 uv run pytest                    # Run all tests
@@ -65,7 +65,7 @@ uv run alembic revision --autogenerate -m "description"  # Create migration
 
 ### Frontend
 ```bash
-cd frontend
+cd apps/frontend
 pnpm install                     # Install dependencies
 pnpm dev                         # Dev server (Vite)
 pnpm build                       # Production build
@@ -77,6 +77,14 @@ pnpm test                        # Run tests
 ```bash
 docker compose up                # Full stack (backend + frontend + PostgreSQL)
 docker compose up -d             # Detached mode
+```
+
+### Monorepo Scripts
+```bash
+./scripts/dev.sh                 # Start backend + frontend concurrently
+./scripts/build.sh               # Build both apps
+./scripts/lint.sh                # Lint both apps
+./scripts/docs-serve.sh          # Serve docs site locally
 ```
 
 ## API Design Conventions
@@ -100,11 +108,11 @@ docker compose up -d             # Detached mode
 ## Implementation Patterns
 
 ### Backend
-- **App factory**: `create_app(settings=None)` in `app/main.py` — no module-level app instance; use `uv run uvicorn app.main:create_app --factory`
+- **App factory**: `create_app(settings=None)` in `apps/backend/src/app/main.py` — no module-level app instance; use `uv run uvicorn app.main:create_app --factory`
 - **App state**: DuckDB manager, DB engine, session factory, connection manager, settings all attached to `app.state`
-- **Dependencies**: `backend/app/dependencies.py` provides `get_db`, `get_duckdb_manager`, `get_connection_manager`, `get_settings`, etc.
-- **Database**: `backend/app/database.py` for SQLAlchemy engine/session factory creation; psycopg[binary] v3.2+ driver
-- **Services**: business logic in `backend/app/services/` (duckdb_manager, connection_manager, provider_service, query_service, nl_query_service, agent_service, schema_context, schema_introspection, chart_heuristics, chart_config, cross_source_query, file_upload)
+- **Dependencies**: `apps/backend/src/app/dependencies.py` provides `get_db`, `get_duckdb_manager`, `get_connection_manager`, `get_settings`, etc.
+- **Database**: `apps/backend/src/app/database.py` for SQLAlchemy engine/session factory creation; psycopg[binary] v3.2+ driver
+- **Services**: business logic in `apps/backend/src/app/services/` (duckdb_manager, connection_manager, provider_service, query_service, nl_query_service, agent_service, schema_context, schema_introspection, chart_heuristics, chart_config, cross_source_query, file_upload)
 - **Tests**: use `sqlite://` DATABASE_URL (not postgresql), httpx.AsyncClient + ASGITransport
 - **JSONB columns**: `JSON().with_variant(JSONB, "postgresql")` for SQLite test compatibility
 - **Boolean defaults**: `sa_true()`/`sa_false()` for cross-database `server_default`

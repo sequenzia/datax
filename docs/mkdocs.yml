@@ -1,0 +1,75 @@
+site_name: DataX
+site_description: AI-native data analytics platform — chat with your data
+site_url: ""
+repo_url: https://github.com/sequenzia/datax
+repo_name: sequenzia/datax
+docs_dir: docs
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+extra_css:
+  - assets/stylesheets/extra.css
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_guess: false
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.snippets
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Quickstart: getting-started/quickstart.md
+    - Configuration: getting-started/configuration.md
+  - Architecture:
+    - Overview: architecture/overview.md
+    - AI Pipeline: architecture/ai-pipeline.md
+    - Frontend: architecture/frontend.md
+  - Reference:
+    - API Reference: reference/api-reference.md
+    - Data Models: reference/data-models.md
+    - Security: reference/security.md
+  - Guides:
+    - Development: guides/development.md
+    - Deployment: guides/deployment.md
+    - Testing: guides/testing.md
+  - ADRs:
+    - "001: Monorepo Structure": adrs/001-monorepo-structure.md

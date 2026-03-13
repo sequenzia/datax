@@ -33,7 +33,7 @@ DataX lets you ask questions about your data in natural language. An AI agent tr
 |-------|-------------|
 | **Backend** | Python 3.12+, FastAPI, Pydantic AI, SQLAlchemy 2, DuckDB, PostgreSQL 16, Alembic, structlog |
 | **Frontend** | React 19, TypeScript 5.9, Vite 7, TanStack Query 5, Zustand 5, Tailwind CSS 4, shadcn/ui, CodeMirror 6, Plotly.js, Streamdown |
-| **Infrastructure** | Docker Compose, PostgreSQL 16 |
+| **Infrastructure** | Docker Compose, PostgreSQL 16, Turborepo |
 
 ## Quick Start
 
@@ -60,7 +60,7 @@ The app will be available at:
 **Backend:**
 
 ```bash
-cd backend
+cd apps/backend
 uv sync
 # Set required environment variables (see Environment Variables below)
 uv run alembic upgrade head
@@ -70,9 +70,15 @@ uv run uvicorn app.main:create_app --factory --reload --host 0.0.0.0 --port 8000
 **Frontend:**
 
 ```bash
-cd frontend
+cd apps/frontend
 pnpm install
 pnpm dev
+```
+
+**Both (concurrent):**
+
+```bash
+./scripts/dev.sh
 ```
 
 ## Architecture
@@ -104,7 +110,7 @@ User question
              └──────────┘                    └──────────────┘
 ```
 
-**Two-language monorepo:** Python backend handles AI orchestration, SQL execution, and data management. TypeScript/React frontend provides the chat interface, SQL editor, and visualizations. They communicate via REST endpoints and SSE streaming.
+**Workspace-based monorepo:** Python backend handles AI orchestration, SQL execution, and data management. TypeScript/React frontend provides the chat interface, SQL editor, and visualizations. They communicate via REST endpoints and SSE streaming.
 
 ## API Overview
 
@@ -128,7 +134,7 @@ SSE events during chat: `message_start`, `token`, `sql_generated`, `query_result
 ### Backend Commands
 
 ```bash
-cd backend
+cd apps/backend
 uv run pytest                    # Run all tests
 uv run pytest tests/test_foo.py  # Run a single test file
 uv run pytest -k "test_name"    # Run tests matching a pattern
@@ -141,11 +147,20 @@ uv run alembic revision --autogenerate -m "description"  # Create migration
 ### Frontend Commands
 
 ```bash
-cd frontend
+cd apps/frontend
 pnpm test                        # Run tests
 pnpm lint                        # Lint
 pnpm format                      # Format with Prettier
 pnpm build                       # Production build
+```
+
+### Monorepo Scripts
+
+```bash
+./scripts/dev.sh                 # Start backend + frontend concurrently
+./scripts/build.sh               # Build both apps
+./scripts/lint.sh                # Lint both apps
+./scripts/docs-serve.sh          # Serve documentation site
 ```
 
 ### Environment Variables
@@ -165,34 +180,36 @@ pnpm build                       # Production build
 
 ```
 datax/
-├── backend/
-│   ├── app/
-│   │   ├── api/v1/          # Route handlers (REST + SSE)
-│   │   ├── models/          # SQLAlchemy ORM models
-│   │   ├── services/        # Business logic
-│   │   │   ├── agent_service.py       # AI agent orchestration
-│   │   │   ├── duckdb_manager.py      # DuckDB virtual table management
-│   │   │   ├── connection_manager.py  # Live database connections
-│   │   │   ├── nl_query_service.py    # Natural language query processing
-│   │   │   ├── query_service.py       # SQL execution
-│   │   │   ├── chart_config.py        # Plotly chart generation
-│   │   │   └── cross_source_query.py  # Cross-source join orchestration
-│   │   ├── config.py        # Settings (Pydantic Settings)
-│   │   ├── database.py      # SQLAlchemy engine/session setup
-│   │   ├── dependencies.py  # FastAPI dependency injection
-│   │   └── main.py          # App factory
-│   ├── alembic/             # Database migrations
-│   └── tests/
-├── frontend/
-│   └── src/
-│       ├── components/      # UI components (shadcn/ui + custom)
-│       ├── pages/           # Route pages (chat, datasets, connections, SQL editor, settings)
-│       ├── hooks/           # Custom React hooks
-│       ├── stores/          # Zustand state stores
-│       ├── contexts/        # React contexts
-│       ├── lib/             # API client, utilities
-│       └── types/           # TypeScript type definitions
+├── apps/
+│   ├── backend/
+│   │   ├── src/
+│   │   │   └── app/
+│   │   │       ├── api/v1/          # Route handlers (REST + SSE)
+│   │   │       ├── models/          # SQLAlchemy ORM models
+│   │   │       ├── services/        # Business logic
+│   │   │       ├── config.py        # Settings (Pydantic Settings)
+│   │   │       ├── database.py      # SQLAlchemy engine/session setup
+│   │   │       ├── dependencies.py  # FastAPI dependency injection
+│   │   │       └── main.py          # App factory
+│   │   ├── alembic/                 # Database migrations
+│   │   └── tests/
+│   └── frontend/
+│       └── src/
+│           ├── components/          # UI components (shadcn/ui + custom)
+│           ├── pages/               # Route pages
+│           ├── hooks/               # Custom React hooks
+│           ├── stores/              # Zustand state stores
+│           ├── contexts/            # React contexts
+│           ├── lib/                 # API client, utilities
+│           └── types/               # TypeScript type definitions
+├── infra/
+│   └── docker/                      # Dockerfiles
+├── scripts/                         # Dev utility scripts
+├── docs/                            # MkDocs documentation site
+├── data/                            # Sample/uploaded data
+├── internal/                        # Specs & internal documents
 ├── docker-compose.yml
+├── turbo.json
 └── .env.example
 ```
 
