@@ -12,12 +12,12 @@ from __future__ import annotations
 from typing import Any
 
 import duckdb
-import sqlalchemy
 from fastapi import APIRouter, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.config import get_settings
+from app.database import create_db_engine
 from app.logging import get_logger
 
 logger = get_logger(__name__)
@@ -68,7 +68,7 @@ async def _check_postgresql() -> str:
     """
     try:
         settings = get_settings()
-        engine = sqlalchemy.create_engine(settings.database_url, pool_pre_ping=True)
+        engine = create_db_engine(settings.database_url)
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         engine.dispose()
