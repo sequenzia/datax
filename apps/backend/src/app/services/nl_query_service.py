@@ -1019,6 +1019,8 @@ def _parse_ai_output(
     source_id = _extract_field(text, "SOURCE_ID")
     source_type = _extract_field(text, "SOURCE_TYPE")
     explanation = _extract_field(text, "EXPLANATION")
+    if explanation:
+        explanation = _strip_code_fences(explanation)
 
     # Validate source_type
     if source_type and source_type not in ("dataset", "connection"):
@@ -1037,6 +1039,11 @@ def _parse_ai_output(
         source_type=source_type,
         explanation=explanation,
     )
+
+
+def _strip_code_fences(text: str) -> str:
+    """Remove markdown fenced code blocks from explanation text."""
+    return re.sub(r"```[\w]*\n.*?\n```", "", text, flags=re.DOTALL).strip()
 
 
 def _extract_field(text: str, field_name: str) -> str:

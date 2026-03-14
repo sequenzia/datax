@@ -46,6 +46,7 @@ from app.services.nl_query_service import (
     _parse_ai_output,
     _resolve_source_from_sql,
     _resolve_source_mapping,
+    _strip_code_fences,
     classify_error,
     is_retryable_error,
 )
@@ -361,6 +362,72 @@ class TestParseAiOutput:
         text = "SQL: SELECT 1\nSOURCE_ID: abc\nSOURCE_TYPE: invalid_type\nEXPLANATION: test"
         result = _parse_ai_output(text, {})
         assert result.source_type is None
+
+    def test_strips_code_fences_from_explanation(self) -> None:
+        source_mapping = {"users": {"source_id": "abc-123", "source_type": "dataset"}}
+        text = (
+            "SQL: SELECT * FROM users\n"
+            "SOURCE_ID: abc-123\n"
+            "SOURCE_TYPE: dataset\n"
+            "EXPLANATION: Here is the query:\n"
+            "```sql\nSELECT * FROM users\n```\n"
+            "This returns all users."
+        )
+        result = _parse_ai_output(text, source_mapping)
+        assert "```" not in result.explanation
+        assert "returns all users" in result.explanation.lower()
+
+    def test_strips_multiple_code_fences_from_explanation(self) -> None:
+        source_mapping = {"sales": {"source_id": "s-1", "source_type": "dataset"}}
+        text = (
+            "SQL: SELECT sum(amount) FROM sales\n"
+            "SOURCE_ID: s-1\n"
+            "SOURCE_TYPE: dataset\n"
+            "EXPLANATION: First block:\n"
+            "```sql\nSELECT sum(amount) FROM sales\n```\n"
+            "Second block:\n"
+            "```\nsome other code\n```\n"
+            "Done."
+        )
+        result = _parse_ai_output(text, source_mapping)
+        assert "```" not in result.explanation
+        assert "done" in result.explanation.lower()
+
+
+# ---------------------------------------------------------------------------
+# Unit: _strip_code_fences
+# ---------------------------------------------------------------------------
+
+
+class TestStripCodeFences:
+    """Test markdown code fence removal from explanation text."""
+
+    def test_strips_sql_code_fence(self) -> None:
+        text = "Here is the query:\n```sql\nSELECT 1\n```\nDone."
+        result = _strip_code_fences(text)
+        assert "```" not in result
+        assert "Here is the query:" in result
+        assert "Done." in result
+
+    def test_strips_plain_code_fence(self) -> None:
+        text = "Example:\n```\nsome code\n```\nEnd."
+        result = _strip_code_fences(text)
+        assert "```" not in result
+        assert "End." in result
+
+    def test_preserves_text_without_fences(self) -> None:
+        text = "This query selects all users from the table."
+        assert _strip_code_fences(text) == text
+
+    def test_handles_empty_string(self) -> None:
+        assert _strip_code_fences("") == ""
+
+    def test_strips_multiline_code_block(self) -> None:
+        text = "Before\n```sql\nSELECT *\nFROM users\nWHERE id = 1\n```\nAfter"
+        result = _strip_code_fences(text)
+        assert "```" not in result
+        assert "Before" in result
+        assert "After" in result
 
 
 # ---------------------------------------------------------------------------
