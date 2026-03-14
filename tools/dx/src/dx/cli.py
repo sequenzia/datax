@@ -49,7 +49,10 @@ class Service(str, Enum):
 
 SERVICE_CONFIG: dict[str, dict[str, object]] = {
     "backend": {
-        "cmd": ["uv", "run", "fastapi", "dev"],
+        "cmd": [
+            "uv", "run", "uvicorn", "app.main:create_app",
+            "--factory", "--reload", "--host", "127.0.0.1", "--port", "8000",
+        ],
         "cwd_rel": "apps/backend",
         "port": BACKEND_PORT,
     },
