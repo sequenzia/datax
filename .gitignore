@@ -23,6 +23,7 @@ dist/
 
 # Runtime data
 .data/
+.datax/
 
 # Claude
 .claude/sessions/

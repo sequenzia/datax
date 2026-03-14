@@ -7,6 +7,7 @@ members = [
     "datax",
     "datax-backend",
     "datax-docs",
+    "dx",
 ]
 
 [[package]]
@@ -357,6 +358,20 @@ name = "datax"
 version = "0.1.0"
 source = { virtual = "." }
 
+[package.dev-dependencies]
+dev = [
+    { name = "datax-backend" },
+    { name = "dx" },
+]
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "datax-backend", editable = "apps/backend" },
+    { name = "dx", editable = "tools/dx" },
+]
+
 [[package]]
 name = "datax-backend"
 version = "0.1.0"
@@ -467,6 +482,21 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/15/1b/5abf0c7f38febb3b4a231c784223fceccfd3f2bfd957699d786f46e41ce6/duckdb-1.5.0-cp314-cp314-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f8e42aaf3cd217417c5dc9ff522dc3939d18b25a6fe5f846348277e831e6f59c", size = 21351583, upload-time = "2026-03-09T12:50:16.701Z" },
     { url = "https://files.pythonhosted.org/packages/93/a4/a90f2901cc0a1ce7ca4f0564b8492b9dbfe048a6395b27933d46ae9be473/duckdb-1.5.0-cp314-cp314-win_amd64.whl", hash = "sha256:11ae50aaeda2145b50294ee0247e4f11fb9448b3cc3d2aea1cfc456637dfb977", size = 13575130, upload-time = "2026-03-09T12:50:19.716Z" },
     { url = "https://files.pythonhosted.org/packages/64/aa/f14dd5e241ec80d9f9d82196ca65e0c53badfc8a7a619d5497c5626657ad/duckdb-1.5.0-cp314-cp314-win_arm64.whl", hash = "sha256:d6d2858c734d1a7e7a1b6e9b8403b3fce26dfefb4e0a2479c420fba6cd36db36", size = 14341879, upload-time = "2026-03-09T12:50:22.347Z" },
+]
+
+[[package]]
+name = "dx"
+version = "0.1.0"
+source = { editable = "tools/dx" }
+dependencies = [
+    { name = "httpx" },
+    { name = "typer" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.28,<1" },
+    { name = "typer", specifier = ">=0.15,<1" },
 ]
 
 [[package]]

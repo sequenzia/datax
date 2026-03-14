@@ -3,5 +3,12 @@ name = "datax"
 version = "0.1.0"
 requires-python = ">=3.12"
 
+[dependency-groups]
+dev = ["datax-backend", "dx"]
+
+[tool.uv.sources]
+datax-backend = { workspace = true }
+dx = { workspace = true }
+
 [tool.uv.workspace]
-members = ["apps/backend", "docs"]
+members = ["apps/backend", "docs", "tools/dx"]
