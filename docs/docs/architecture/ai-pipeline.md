@@ -113,6 +113,21 @@ The agent is configured with:
 - **Dependencies**: `AgentDeps` dataclass with schema context, conversation ID, and available table names
 - **Retries**: Configurable (default 3) for transient model call failures
 
+The `create_model()` function constructs the appropriate Pydantic AI model class for each provider. OpenAI uses `OpenAIResponsesModel` (the [Responses API](https://platform.openai.com/docs/api-reference/responses)), while Anthropic and Gemini use their respective native model classes. OpenAI-compatible providers use `OpenAIChatModel` (the Chat Completions API), since third-party endpoints typically do not support the Responses API.
+
+``` python title="apps/backend/src/app/services/agent_service.py"
+def create_model(provider_name, model_name, api_key, base_url=None, timeout=30.0):
+    if provider_name == ProviderName.OPENAI:
+        provider = OpenAIProvider(api_key=api_key)
+        return OpenAIResponsesModel(model_name, provider=provider)
+
+    # ... Anthropic, Gemini use their native model classes ...
+
+    if provider_name == ProviderName.OPENAI_COMPATIBLE:
+        provider = OpenAIProvider(api_key=api_key, base_url=base_url)
+        return OpenAIChatModel(model_name, provider=provider)
+```
+
 ## Step 3: SQL Generation
 
 The NLQueryService sends the user's question to the AI agent along with the schema context and a structured prompt. The agent must respond in a specific format:
@@ -167,6 +182,33 @@ Once SQL is generated and validated, `QueryService` routes it to the appropriate
 |---|---|---|
 | `dataset` | DuckDB (in-process) | DuckDB SQL |
 | `connection` | SQLAlchemy → external DB | PostgreSQL or MySQL |
+
+### DuckDB View Rehydration
+
+DuckDB runs in-memory, so all view definitions are lost when the backend process exits. To ensure uploaded datasets remain queryable after a server restart, the application re-registers DuckDB views during startup.
+
+The `_rehydrate_duckdb_views()` function in the lifespan manager queries PostgreSQL for all datasets with `status = READY`, checks that each underlying file still exists on disk, and calls `duckdb_mgr.register_file()` to recreate the view. Datasets whose files are missing are marked as `ERROR`.
+
+``` python title="apps/backend/src/app/main.py"
+def _rehydrate_duckdb_views(session_factory, duckdb_mgr):
+    """Re-create DuckDB views for all ready datasets after a restart."""
+    with session_factory() as session:
+        datasets = session.execute(
+            select(Dataset).where(Dataset.status == DatasetStatus.READY)
+        ).scalars().all()
+
+        for ds in datasets:
+            file_path = Path(ds.file_path)
+            if not file_path.exists():
+                ds.status = DatasetStatus.ERROR
+                continue
+            duckdb_mgr.register_file(file_path, ds.duckdb_table_name, ds.file_format)
+
+        session.commit()
+```
+
+!!! info "No Re-Upload Required"
+    Users do not need to re-upload files after a restart. The file data and PostgreSQL metadata survive across restarts — only the in-memory DuckDB views need to be recreated. This happens automatically before the server accepts requests.
 
 ### Safety Checks
 
@@ -460,12 +502,15 @@ message_start → token* → sql_generated → query_result → message_end
 
 DataX supports four AI providers through a pluggable model layer built on Pydantic AI:
 
-| Provider | Model Prefix | Default Model | Env Variable |
+| Provider | Model Class | Default Model | Env Variable |
 |---|---|---|---|
-| OpenAI | `openai` | `gpt-4o` | `DATAX_OPENAI_API_KEY` |
-| Anthropic | `anthropic` | `claude-sonnet-4-20250514` | `DATAX_ANTHROPIC_API_KEY` |
-| Gemini | `google-gla` | `gemini-2.0-flash` | `DATAX_GEMINI_API_KEY` |
-| OpenAI-compatible | `openai` | `default` | — (requires UI config + base_url) |
+| OpenAI | `OpenAIResponsesModel` (Responses API) | `gpt-4o` | `DATAX_OPENAI_API_KEY` |
+| Anthropic | `AnthropicModel` | `claude-sonnet-4-20250514` | `DATAX_ANTHROPIC_API_KEY` |
+| Gemini | `GoogleModel` | `gemini-2.0-flash` | `DATAX_GEMINI_API_KEY` |
+| OpenAI-compatible | `OpenAIChatModel` (Chat Completions API) | `default` | — (requires UI config + base_url) |
+
+!!! note "OpenAI Responses API"
+    OpenAI requests use the [Responses API](https://platform.openai.com/docs/api-reference/responses) via `OpenAIResponsesModel`, not the older Chat Completions API. OpenAI-compatible providers (third-party endpoints) continue to use `OpenAIChatModel` with the Chat Completions API, since most third-party services do not support the Responses API.
 
 ### Provider Resolution Order
 

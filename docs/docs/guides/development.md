@@ -143,9 +143,62 @@ datax/
 │       │   └── types/           # TypeScript type definitions
 │       ├── vitest.config.ts     # Test configuration
 │       └── package.json         # Node project config
+├── docs/                        # MkDocs documentation site
+├── tools/
+│   └── dx/                      # Dev server CLI (see below)
+├── scripts/                     # Shell scripts for monorepo tasks
 ├── docker-compose.yml
 ├── .env.example
 └── CLAUDE.md
+```
+
+### Monorepo Workspace Setup
+
+DataX uses **two workspace systems** to manage its monorepo — one for Python and one for Node.js.
+
+#### Python Workspaces (uv)
+
+The root `pyproject.toml` defines a [uv workspace](https://docs.astral.sh/uv/concepts/workspaces/) with three members:
+
+| Member | Path | Description |
+|--------|------|-------------|
+| `datax-backend` | `apps/backend` | FastAPI backend application |
+| `datax-docs` | `docs` | MkDocs documentation site |
+| `dx` | `tools/dx` | Dev server CLI tool |
+
+Running `uv sync` from the project root resolves all Python workspace members and installs them in a shared virtual environment. The root dev dependency group pulls in `datax-backend` and `dx` as editable installs, so both packages are available on `PATH` after a single `uv sync`.
+
+#### Node.js Workspaces (pnpm)
+
+The `pnpm-workspace.yaml` declares `apps/frontend` as the sole pnpm workspace member. **Turborepo** (`turbo.json`) orchestrates frontend tasks (`dev`, `build`, `lint`, `test`) with caching and dependency ordering.
+
+#### Root Scripts
+
+The root `package.json` exposes convenience scripts that delegate to shell scripts in `scripts/`:
+
+| Command | Script | What it does |
+|---------|--------|--------------|
+| `pnpm dev` | `scripts/dev.sh` | Starts both backend (`uv run fastapi dev`) and frontend (`pnpm dev`) concurrently, with process cleanup on exit |
+| `pnpm build` | `scripts/build.sh` | Builds the backend (`uv build`) and frontend (`pnpm build`) sequentially |
+| `pnpm lint` | `scripts/lint.sh` | Runs Ruff check + format check on the backend and ESLint on the frontend |
+
+!!! tip "Quick full-stack start"
+    From the project root, `pnpm dev` is the fastest way to start both servers in a single terminal. Press `Ctrl+C` to stop both.
+
+### `dx` — Dev Server CLI
+
+The `tools/dx/` directory contains **dx**, a Typer-based CLI for managing the backend and frontend dev servers. It provides PID tracking, health checking, log tailing, and clean process group shutdown. Runtime artifacts are stored in `.datax/` at the project root (gitignored).
+
+After running `uv sync` at the project root, the `dx` command is available:
+
+```bash
+dx start               # Start both backend and frontend
+dx start backend       # Start only the backend
+dx stop                # Stop all running servers
+dx restart             # Restart all servers
+dx status              # Show running services, PIDs, and ports
+dx logs backend -n 100 # Tail backend logs (last 100 lines)
+dx health              # Check backend /health and /ready endpoints
 ```
 
 ---
@@ -441,6 +494,61 @@ feat/dataset-upload-preview
 fix/connection-timeout-handling
 docs/api-reference-update
 ```
+
+---
+
+## CI/CD
+
+DataX uses **GitHub Actions** for continuous integration, deployment, and documentation publishing. Workflow files live in `.github/workflows/`.
+
+### CI Pipeline
+
+**File:** `.github/workflows/ci.yml`
+**Triggers:** Push to `main`, pull requests targeting `main`
+
+The CI workflow runs four parallel jobs covering both the backend and frontend:
+
+```mermaid
+flowchart LR
+    trigger["Push / PR to main"]:::neutral --> lint_be["Backend Lint"]:::primary
+    trigger --> test_be["Backend Test"]:::primary
+    trigger --> lint_fe["Frontend Lint"]:::secondary
+    trigger --> test_fe["Frontend Test"]:::secondary
+
+    classDef primary fill:#dbeafe,stroke:#2563eb,color:#000
+    classDef secondary fill:#f3e8ff,stroke:#7c3aed,color:#000
+    classDef neutral fill:#f3f4f6,stroke:#6b7280,color:#000
+```
+
+| Job | Runner | What it does |
+|-----|--------|--------------|
+| **Backend Lint** | `ubuntu-latest` | Installs Python deps with `uv sync --frozen`, then runs `ruff check` and `ruff format --check` |
+| **Backend Test** | `ubuntu-latest` | Installs Python deps with `uv sync --frozen`, then runs `pytest` |
+| **Frontend Lint** | `ubuntu-latest` | Installs Node 22 + pnpm deps with `--frozen-lockfile`, then runs `pnpm lint` |
+| **Frontend Test** | `ubuntu-latest` | Installs Node 22 + pnpm deps with `--frozen-lockfile`, then runs `pnpm test` |
+
+!!! info "Lockfile enforcement"
+    All CI jobs use frozen/locked installs (`uv sync --frozen`, `pnpm install --frozen-lockfile`) to ensure reproducible builds. If you add or update dependencies locally, commit the updated lockfiles or CI will fail.
+
+### Docs Deployment
+
+**File:** `.github/workflows/docs.yml`
+**Triggers:** Push to `main` that changes files under `docs/`
+
+This workflow builds the MkDocs site and deploys it to **GitHub Pages**:
+
+1. **Build** — Installs docs dependencies with `uv sync --frozen` in the `docs/` workspace, then runs `uv run mkdocs build` to generate the static site into `docs/site/`
+2. **Deploy** — Uploads the built site as a Pages artifact and deploys via `actions/deploy-pages@v4`
+
+The workflow requires `pages: write` and `id-token: write` permissions for GitHub Pages deployment.
+
+### Application Deployment
+
+**File:** `.github/workflows/deploy.yml`
+**Triggers:** Manual dispatch only (`workflow_dispatch`)
+
+!!! warning "Placeholder workflow"
+    The deploy workflow is currently a placeholder. It accepts a target environment (`staging` or `production`) via manual dispatch but does not perform any actual deployment steps. Configure this workflow when a deployment target is ready.
 
 ---
 

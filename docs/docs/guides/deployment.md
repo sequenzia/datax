@@ -256,6 +256,34 @@ configured by `DATAX_STORAGE_PATH` (default: `./data/uploads`).
     file is deleted or moved, the corresponding virtual table becomes
     inaccessible. Ensure the storage path is durable and consistent.
 
+### DuckDB View Rehydration
+
+DuckDB runs in-memory, so its view definitions are lost when the backend
+process restarts. To handle this, DataX automatically **re-registers
+DuckDB views** for all known datasets during application startup.
+
+The rehydration process works as follows:
+
+1. On startup, the backend queries PostgreSQL for all datasets with a
+   `READY` status.
+2. For each dataset, it verifies the underlying file still exists at its
+   stored `file_path`.
+3. If the file is present, DuckDB re-registers it as a virtual table
+   using the original table name and file format.
+4. If a file is missing, the dataset's status is set to `ERROR` and a
+   warning is logged.
+
+!!! info "No user action required after restarts"
+    Uploaded file data is available immediately after a server restart
+    without any manual intervention. As long as PostgreSQL metadata and
+    the uploaded files are intact, DuckDB views are reconstructed
+    automatically by the `_rehydrate_duckdb_views` function in the
+    application lifespan manager (`apps/backend/src/app/main.py`).
+
+This behavior reinforces why both **PostgreSQL data** and **uploaded
+files** must be on durable, persistent storage — they are the source of
+truth that DuckDB rebuilds from on every startup.
+
 ## Production Considerations
 
 The current Docker setup is designed for **development only**. Several
@@ -336,6 +364,14 @@ graph TB
     DataX targets. Scale vertically (bigger instance) before adding
     workers.
 
+!!! note "View rehydration helps with worker restarts"
+    When a worker process restarts, the [DuckDB view rehydration](#duckdb-view-rehydration)
+    mechanism automatically re-registers all virtual tables from
+    PostgreSQL metadata. This means individual worker restarts (e.g.,
+    during rolling deployments) recover their DuckDB state without
+    manual intervention, as long as uploaded files are available on
+    shared storage.
+
 ### Horizontal Scaling Strategy
 
 If you need multiple backend instances:
@@ -343,6 +379,87 @@ If you need multiple backend instances:
 1. **Session affinity** at the load balancer (e.g., cookie-based sticky sessions)
 2. **Shared file storage** (NFS, EFS, or object storage) for uploaded files
 3. **Re-register virtual tables** on worker startup by scanning the uploads directory
+
+## CI/CD Pipeline
+
+### Application Deployment
+
+A GitHub Actions deployment workflow exists at `.github/workflows/deploy.yml`.
+It is currently a **placeholder** with manual dispatch — you must trigger
+it manually via the GitHub Actions UI and select a target environment
+(`staging` or `production`).
+
+!!! info "Deployment steps are not yet configured"
+    The deploy workflow runs on `workflow_dispatch` only and does not
+    execute any real deployment steps. Configure it with your target
+    platform (e.g., Docker registry push, Kubernetes apply, cloud
+    provider CLI) before using it in production.
+
+For details on the development workflow, testing, and linting commands,
+see the [Development Guide](development.md).
+
+### Documentation Site Deployment
+
+The DataX documentation site is built with [MkDocs](https://www.mkdocs.org/)
+(Material theme) and **automatically deployed to GitHub Pages** on every
+push to `main` that modifies files in the `docs/` directory.
+
+#### How It Works
+
+The deployment is handled by the GitHub Actions workflow at
+`.github/workflows/docs.yml`:
+
+```mermaid
+flowchart LR
+    A["Push to main<br/>(docs/** changed)"]:::primary --> B["Install deps<br/>uv sync"]:::neutral
+    B --> C["Build site<br/>mkdocs build"]:::neutral
+    C --> D["Upload artifact<br/>docs/site"]:::neutral
+    D --> E["Deploy to<br/>GitHub Pages"]:::success
+
+    classDef primary fill:#dbeafe,stroke:#2563eb,color:#000
+    classDef neutral fill:#f3f4f6,stroke:#6b7280,color:#000
+    classDef success fill:#dcfce7,stroke:#16a34a,color:#000
+```
+
+1. **Trigger:** A push to `main` that includes changes under `docs/`.
+2. **Build:** The workflow installs Python dependencies with `uv` and
+   runs `mkdocs build` to generate static HTML in `docs/site/`.
+3. **Deploy:** The built site is uploaded as a GitHub Pages artifact and
+   deployed via `actions/deploy-pages`.
+
+#### Serving Docs Locally
+
+For local preview while editing documentation:
+
+=== "Direct"
+
+    ```bash
+    cd docs
+    uv run mkdocs serve
+    ```
+
+    The site is available at **http://localhost:8000**.
+
+=== "Script"
+
+    ```bash
+    ./scripts/docs-serve.sh
+    ```
+
+=== "Docker"
+
+    A `docs.Dockerfile` is provided at `infra/docker/docs.Dockerfile` for
+    containerized docs serving:
+
+    ```bash
+    docker build -f infra/docker/docs.Dockerfile -t datax-docs .
+    docker run -p 8001:8001 datax-docs
+    ```
+
+    The containerized docs site is available at **http://localhost:8001**.
+
+The docs container uses `python:3.12-slim` with `uv` for dependency
+management and serves the site via `mkdocs serve` on port 8001.
 
 ## Production Readiness Checklist
 

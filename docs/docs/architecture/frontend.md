@@ -360,6 +360,23 @@ Most hooks use **exponential backoff** for retries: `Math.min(1000 * 2^attempt, 
     useSchema()          // GET /schema (staleTime: 30s)
     ```
 
+    ```typescript title="src/hooks/use-schema-completions.ts"
+    useSchemaCompletions(source) // Fetches schema for a dataset or connection,
+                                // returns TableSchema[] for CodeMirror autocomplete
+                                // (staleTime: 60s, enabled when source is set)
+    ```
+
+=== "Dashboard"
+
+    ```typescript title="src/hooks/use-dashboard-data.ts"
+    useDatasets()       // GET /datasets (polling every 30s, retry: 3)
+    useConnections()    // GET /connections (polling every 30s, retry: 3)
+    useConversations()  // GET /conversations (retry: 3)
+    ```
+
+    !!! info "Dashboard Polling"
+        The dashboard hooks use a 30-second polling interval (`refetchInterval`) to keep data source counts and conversation lists up to date without requiring manual refresh.
+
 ### Cache Invalidation Pattern
 
 All mutation hooks follow a consistent pattern: on success, they invalidate the relevant query key to trigger a refetch.
@@ -386,6 +403,11 @@ useMutation({
 | `MessageBubble` | `components/chat/` | Role-based message styling (user vs. assistant) |
 | `StreamingText` | `components/chat/` | Live token rendering via Streamdown with block caret |
 | `MarkdownContent` | `components/chat/` | Static rendered markdown for completed messages |
+| `InlineResultBlock` | `components/chat/inline-result-block.tsx` | Composes SQL, table preview, and chart blocks from message metadata |
+| `InlineSqlBlock` | `components/chat/inline-sql-block.tsx` | Syntax-highlighted SQL code block with copy and open-in-editor actions |
+| `InlineTablePreview` | `components/chat/inline-table-preview.tsx` | Compact data table showing up to 8 rows with expand-to-modal support |
+| `InlineChartBlock` | `components/chat/inline-chart-block.tsx` | Compact Plotly chart (250px) with full-size modal expansion |
+| `DataExplorerModal` | `components/chat/data-explorer-modal.tsx` | Full-screen modal with sortable, paginated table and CSV/JSON export |
 
 ### Chart Components
 
@@ -418,6 +440,13 @@ Features a search filter and constraint badges for primary keys (PK), foreign ke
 | `ResultCard` | SQL display + sortable table + pagination + CSV export + chart rendering |
 | `ResultsPanel` | Scrollable container for `ResultCard` items |
 | `ResultsCanvas` | Top-level results wrapper within the layout |
+
+### Utility Components
+
+| Component | File | Responsibility |
+|---|---|---|
+| `ErrorBoundary` | `components/error-boundary.tsx` | React error boundary that catches render errors and displays a recovery UI with a "Try again" button |
+| `ThemeToggle` | `components/theme-toggle.tsx` | Light/dark mode toggle button using the `useTheme` hook, supports system theme detection |
 
 ---
 

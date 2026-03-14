@@ -82,7 +82,7 @@ Twelve services encapsulate all business logic. The API layer delegates to servi
 | `FileUpload` | Multipart file handling, storage, DuckDB registration trigger |
 | `SchemaIntrospection` | Column-level schema extraction from DuckDB and live databases |
 | `SchemaContext` | Builds natural-language schema descriptions for AI prompts |
-| `AgentService` | Pydantic AI agent factory with multi-provider support |
+| `AgentService` | Pydantic AI agent factory with multi-provider support (OpenAI providers use the Responses API via `OpenAIResponsesModel`) |
 | `QueryService` | SQL execution router — dispatches to DuckDB or ConnectionManager |
 | `NLQueryService` | NL-to-SQL pipeline: prompt → AI → execute → self-correct |
 | `CrossSourceQuery` | Cross-source join orchestration with DuckDB temp tables |
@@ -435,10 +435,70 @@ sequenceDiagram
 
 ---
 
+## Workspace Configuration
+
+DataX is a two-language monorepo orchestrated by three tools:
+
+| Tool | Scope | Config File |
+|------|-------|------------|
+| **uv workspaces** | Python packages | `pyproject.toml` (root) |
+| **pnpm workspaces** | Node.js packages | `pnpm-workspace.yaml` |
+| **Turbo** | Cross-language task runner | `turbo.json` |
+
+### uv Workspaces (Python)
+
+The root `pyproject.toml` defines a uv workspace with three Python members:
+
+```toml title="pyproject.toml (root)"
+[tool.uv.workspace]
+members = ["apps/backend", "docs", "tools/dx"]
+```
+
+- **`apps/backend`** — The FastAPI application (main product backend)
+- **`docs`** — MkDocs documentation site (has its own dependencies)
+- **`tools/dx`** — Developer CLI built with Typer, provides the `dx` command for local dev workflows
+
+The root project's dev dependency group references workspace members as editable installs, so `uv sync` in the repo root installs all Python packages in development mode.
+
+### pnpm Workspaces (Node.js)
+
+```yaml title="pnpm-workspace.yaml"
+packages:
+  - "apps/frontend"
+```
+
+A single Node.js workspace member — the React/Vite frontend.
+
+### Turbo (Task Orchestration)
+
+Turbo runs tasks across both Python and Node.js workspaces from a single command:
+
+```json title="turbo.json"
+{
+  "tasks": {
+    "dev": { "cache": false, "persistent": true },
+    "build": { "dependsOn": ["^build"], "outputs": ["dist/**"] },
+    "lint": {},
+    "test": {}
+  }
+}
+```
+
+- **`dev`** — Starts all dev servers concurrently (non-cached, persistent processes)
+- **`build`** — Builds all packages with topological dependency ordering
+- **`lint`** and **`test`** — Runs linting and tests across all workspaces in parallel
+
+---
+
 ## Directory Structure
 
 ```
 datax/
+├── .github/
+│   └── workflows/
+│       ├── ci.yml                    # CI pipeline (lint, test, build)
+│       ├── deploy.yml                # Deployment workflow
+│       └── docs.yml                  # Documentation site build/deploy
 ├── apps/
 │   ├── backend/
 │   │   ├── src/
@@ -497,7 +557,19 @@ datax/
 │           ├── types/                 # TypeScript API type definitions
 │           ├── contexts/              # React contexts (theme, etc.)
 │           └── providers/             # ThemeProvider, QueryProvider
+├── docs/                          # MkDocs documentation site (uv workspace member)
+├── tools/
+│   └── dx/                        # Developer CLI (uv workspace member)
+│       ├── src/
+│       │   └── dx/
+│       │       └── cli.py         # Typer CLI — `dx` command
+│       └── pyproject.toml
+├── scripts/                       # Shell scripts (dev, build, lint, docs-serve)
+├── infra/                         # Infrastructure configs (docker, k8s, terraform)
 ├── docker-compose.yml             # Full-stack orchestration
+├── pyproject.toml                 # Root uv workspace config
+├── pnpm-workspace.yaml            # pnpm workspace config
+├── turbo.json                     # Turbo task orchestration
 ├── mkdocs.yml                     # Documentation site config
 └── CLAUDE.md                      # AI assistant project guide
 ```
