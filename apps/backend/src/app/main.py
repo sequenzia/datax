@@ -5,6 +5,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import select
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.health import router as health_router
 from app.api.v1.router import router as v1_router
@@ -12,9 +14,79 @@ from app.config import Settings, get_settings
 from app.database import create_db_engine, create_session_factory
 from app.errors import register_exception_handlers
 from app.logging import get_logger, setup_logging
+from app.models.dataset import DatasetStatus
+from app.models.orm import Dataset
 from app.services.connection_manager import ConnectionManager
 from app.services.duckdb_manager import DuckDBManager
 from app.shutdown import ShutdownManager
+
+
+def _rehydrate_duckdb_views(
+    session_factory: sessionmaker[Session],
+    duckdb_mgr: DuckDBManager,
+) -> None:
+    """Re-create DuckDB views for all ready datasets after a restart.
+
+    DuckDB runs in-memory, so view definitions are lost when the process
+    exits. The underlying files and PostgreSQL metadata survive, so this
+    function bridges the two by re-registering each file as a view.
+    """
+    logger = get_logger(__name__)
+
+    with session_factory() as session:
+        datasets = (
+            session.execute(
+                select(Dataset).where(Dataset.status == DatasetStatus.READY)
+            )
+            .scalars()
+            .all()
+        )
+
+        registered = 0
+        errors = 0
+
+        for ds in datasets:
+            file_path = Path(ds.file_path)
+
+            if not file_path.exists():
+                logger.warning(
+                    "rehydrate_file_missing",
+                    dataset_id=str(ds.id),
+                    file_path=str(file_path),
+                )
+                ds.status = DatasetStatus.ERROR
+                errors += 1
+                continue
+
+            try:
+                result = duckdb_mgr.register_file(
+                    file_path, ds.duckdb_table_name, ds.file_format
+                )
+                if result.is_success:
+                    registered += 1
+                else:
+                    logger.warning(
+                        "rehydrate_registration_failed",
+                        dataset_id=str(ds.id),
+                        error=result.error_message,
+                    )
+                    errors += 1
+            except Exception:
+                logger.warning(
+                    "rehydrate_registration_error",
+                    dataset_id=str(ds.id),
+                    exc_info=True,
+                )
+                errors += 1
+
+        session.commit()
+
+    logger.info(
+        "duckdb_rehydration_complete",
+        registered=registered,
+        errors=errors,
+        total=len(datasets),
+    )
 
 
 @asynccontextmanager
@@ -30,6 +102,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception:
         # Signal handlers cannot be installed in some test/thread contexts.
         logger.debug("signal_handlers_skipped", reason="not_main_thread_or_no_loop")
+
+    # Re-register DuckDB views for datasets that survived a restart.
+    try:
+        _rehydrate_duckdb_views(
+            session_factory=app.state.session_factory,
+            duckdb_mgr=app.state.duckdb_manager,
+        )
+    except Exception:
+        logger.error("duckdb_rehydration_failed", exc_info=True)
 
     yield
 
