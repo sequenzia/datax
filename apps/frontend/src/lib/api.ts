@@ -361,6 +361,8 @@ export function sendMessageSSE(
 
       const decoder = new TextDecoder();
       let buffer = "";
+      let eventType = "";
+      let eventData = "";
 
       while (true) {
         const { done, value } = await reader.read();
@@ -370,10 +372,10 @@ export function sendMessageSSE(
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
 
-        let eventType = "";
-        let eventData = "";
-
-        for (const line of lines) {
+        for (const rawLine of lines) {
+          const line = rawLine.endsWith("\r")
+            ? rawLine.slice(0, -1)
+            : rawLine;
           if (line.startsWith("event: ")) {
             eventType = line.slice(7).trim();
           } else if (line.startsWith("data: ")) {
@@ -383,7 +385,7 @@ export function sendMessageSSE(
               const parsed = JSON.parse(eventData) as Record<string, unknown>;
               switch (eventType as SSEEventType) {
                 case "token":
-                  callbacks.onToken?.(parsed.token as string);
+                  callbacks.onToken?.(parsed.content as string);
                   break;
                 case "message_start":
                   callbacks.onMessageStart?.(parsed);
