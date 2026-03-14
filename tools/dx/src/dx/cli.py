@@ -206,10 +206,12 @@ def _start_service(
     proc = subprocess.Popen(
         cmd,
         cwd=cwd,
+        stdin=subprocess.DEVNULL,
         stdout=log_file,
         stderr=log_file,
         start_new_session=True,
     )
+    log_file.close()
 
     pids[name] = proc.pid
     _write_pids(root, pids)
