@@ -658,6 +658,12 @@ class TestSSEEventOrdering:
             result_idx = event_types.index("query_result")
             assert sql_idx < result_idx
 
+        # chart_config (if present) should come after query_result
+        if "chart_config" in event_types and "query_result" in event_types:
+            result_idx = event_types.index("query_result")
+            chart_idx = event_types.index("chart_config")
+            assert chart_idx > result_idx
+
 
 # ---------------------------------------------------------------------------
 # Edge Cases: Clarification and no-source responses
@@ -725,3 +731,190 @@ class TestEdgeCaseResponses:
         assert len(token_events) > 0
         combined = "".join(e["data"]["content"] for e in token_events)
         assert "No data sources" in combined
+
+
+# ---------------------------------------------------------------------------
+# Chart config SSE event
+# ---------------------------------------------------------------------------
+
+
+class TestChartConfigEvent:
+    """Test chart_config SSE event generation and shape."""
+
+    @pytest.mark.asyncio
+    async def test_stream_contains_chart_config_for_numeric_data(self, client) -> None:
+        """Chartable numeric data should emit a chart_config event."""
+        resp = await client.post("/api/v1/conversations")
+        conv_id = resp.json()["id"]
+
+        # Use negative values so heuristics pick bar instead of pie
+        mock_result = _mock_nl_service_result(
+            explanation="Sales by category",
+            sql="SELECT category, amount FROM sales",
+            columns=["category", "amount"],
+            rows=[["A", 100], ["B", -50], ["C", 300]],
+        )
+
+        with patch(
+            "app.api.v1.messages.NLQueryService"
+        ) as mock_nl_cls:
+            mock_instance = mock_nl_cls.return_value
+            mock_instance.process_question = AsyncMock(return_value=mock_result)
+
+            response = await client.post(
+                f"/api/v1/conversations/{conv_id}/messages",
+                json={"content": "Show sales by category"},
+            )
+
+        events = _parse_sse_events(response.text)
+        chart_events = [e for e in events if e["event"] == "chart_config"]
+
+        assert len(chart_events) == 1
+        chart_data = chart_events[0]["data"]
+        # Frontend expects 'type', not 'chart_type'
+        assert chart_data["type"] == "bar"
+        assert "data" in chart_data
+        assert "layout" in chart_data
+        # layout.title must be a plain string (frontend calls .replace() on it)
+        assert isinstance(chart_data["layout"]["title"], str)
+
+    @pytest.mark.asyncio
+    async def test_chart_config_not_emitted_for_non_chartable_data(self, client) -> None:
+        """Non-numeric, non-chartable data should not emit a chart_config event."""
+        resp = await client.post("/api/v1/conversations")
+        conv_id = resp.json()["id"]
+
+        # Multiple rows of text-only data → heuristics return TABLE (no chart)
+        mock_result = _mock_nl_service_result(
+            explanation="User names",
+            sql="SELECT name, city FROM users",
+            columns=["name", "city"],
+            rows=[["Alice", "NYC"], ["Bob", "LA"], ["Carol", "SF"]],
+        )
+
+        with patch(
+            "app.api.v1.messages.NLQueryService"
+        ) as mock_nl_cls:
+            mock_instance = mock_nl_cls.return_value
+            mock_instance.process_question = AsyncMock(return_value=mock_result)
+
+            response = await client.post(
+                f"/api/v1/conversations/{conv_id}/messages",
+                json={"content": "List users"},
+            )
+
+        events = _parse_sse_events(response.text)
+        chart_events = [e for e in events if e["event"] == "chart_config"]
+        assert len(chart_events) == 0
+
+    @pytest.mark.asyncio
+    async def test_chart_config_saved_in_message_metadata(self, client, db) -> None:
+        """chart_config should be persisted in the assistant message metadata."""
+        resp = await client.post("/api/v1/conversations")
+        conv_id = uuid.UUID(resp.json()["id"])
+
+        # Use negative values so heuristics pick bar instead of pie
+        mock_result = _mock_nl_service_result(
+            explanation="Revenue data",
+            sql="SELECT region, revenue FROM sales",
+            columns=["region", "revenue"],
+            rows=[["East", 500], ["West", -100], ["North", 300]],
+        )
+
+        with patch(
+            "app.api.v1.messages.NLQueryService"
+        ) as mock_nl_cls:
+            mock_instance = mock_nl_cls.return_value
+            mock_instance.process_question = AsyncMock(return_value=mock_result)
+
+            await client.post(
+                f"/api/v1/conversations/{conv_id}/messages",
+                json={"content": "Show revenue by region"},
+            )
+
+        db.expire_all()
+        messages = db.execute(
+            select(Message).where(
+                Message.conversation_id == conv_id,
+                Message.role == "assistant",
+            )
+        ).scalars().all()
+
+        assert len(messages) == 1
+        assert messages[0].metadata_ is not None
+        assert "chart_config" in messages[0].metadata_
+        assert messages[0].metadata_["chart_config"]["type"] == "bar"
+
+    @pytest.mark.asyncio
+    async def test_chart_config_kpi_for_single_value(self, client) -> None:
+        """Single-row numeric result should emit a KPI chart_config."""
+        resp = await client.post("/api/v1/conversations")
+        conv_id = resp.json()["id"]
+
+        mock_result = _mock_nl_service_result(
+            explanation="Total count",
+            sql="SELECT COUNT(*) AS total FROM users",
+            columns=["total"],
+            rows=[[42]],
+        )
+
+        with patch(
+            "app.api.v1.messages.NLQueryService"
+        ) as mock_nl_cls:
+            mock_instance = mock_nl_cls.return_value
+            mock_instance.process_question = AsyncMock(return_value=mock_result)
+
+            response = await client.post(
+                f"/api/v1/conversations/{conv_id}/messages",
+                json={"content": "How many users?"},
+            )
+
+        events = _parse_sse_events(response.text)
+        chart_events = [e for e in events if e["event"] == "chart_config"]
+
+        assert len(chart_events) == 1
+        chart_data = chart_events[0]["data"]
+        assert chart_data["type"] == "kpi"
+        assert chart_data["kpiValue"] == 42
+        assert chart_data["kpiLabel"] == "total"
+
+    @pytest.mark.asyncio
+    async def test_chart_generation_failure_does_not_break_stream(self, client) -> None:
+        """Chart generation errors should not prevent the stream from completing."""
+        resp = await client.post("/api/v1/conversations")
+        conv_id = resp.json()["id"]
+
+        mock_result = _mock_nl_service_result(
+            explanation="Some data",
+            sql="SELECT x, y FROM data",
+            columns=["x", "y"],
+            rows=[["a", 10], ["b", 20]],
+        )
+
+        with (
+            patch(
+                "app.api.v1.messages.NLQueryService"
+            ) as mock_nl_cls,
+            patch(
+                "app.api.v1.messages.recommend_chart_type",
+                side_effect=RuntimeError("chart engine crashed"),
+            ),
+        ):
+            mock_instance = mock_nl_cls.return_value
+            mock_instance.process_question = AsyncMock(return_value=mock_result)
+
+            response = await client.post(
+                f"/api/v1/conversations/{conv_id}/messages",
+                json={"content": "Show data"},
+            )
+
+        events = _parse_sse_events(response.text)
+        event_types = [e["event"] for e in events]
+
+        # Stream should still complete normally
+        assert "message_start" in event_types
+        assert "message_end" in event_types
+        # query_result should still be emitted
+        assert "query_result" in event_types
+        # No chart_config since the chart engine crashed
+        assert "chart_config" not in event_types

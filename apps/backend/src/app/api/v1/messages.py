@@ -32,6 +32,8 @@ from app.errors import AppError
 from app.logging import get_logger
 from app.models.orm import Conversation, Message
 from app.services.agent_service import NoProviderConfiguredError
+from app.services.chart_config import PlotlyConfig, generate_chart_config
+from app.services.chart_heuristics import ChartType, recommend_chart_type
 from app.services.nl_query_service import NLQueryService
 from app.services.query_service import QueryService
 from app.shutdown import ShutdownManager
@@ -50,6 +52,46 @@ class SendMessageRequest(BaseModel):
 def _sse_event(event: str, data: dict[str, Any]) -> dict[str, str]:
     """Format an SSE event as a dict for sse-starlette."""
     return {"event": event, "data": json.dumps(data)}
+
+
+def _to_frontend_chart_config(plotly_config: PlotlyConfig) -> dict[str, Any]:
+    """Transform a PlotlyConfig into the frontend's ChartConfig shape.
+
+    Handles three key differences between backend output and frontend expectations:
+    - Renames ``chart_type`` to ``type``
+    - Maps ``histogram`` to ``bar`` (frontend validTypes doesn't include histogram)
+    - Extracts KPI fields (``kpiValue``, ``kpiLabel``) from indicator traces
+    """
+    chart_type = plotly_config.chart_type
+
+    # Frontend validTypes: line, bar, pie, scatter, kpi
+    if chart_type == "histogram":
+        chart_type = "bar"
+
+    result: dict[str, Any] = {"type": chart_type}
+
+    if chart_type == "kpi":
+        # Extract value/label from first indicator trace for the frontend's
+        # custom KPI card (it doesn't use Plotly for KPI rendering)
+        for trace in plotly_config.data:
+            if trace.get("type") == "indicator":
+                result["kpiValue"] = trace.get("value")
+                title = trace.get("title")
+                if isinstance(title, dict):
+                    result["kpiLabel"] = title.get("text", "")
+                elif isinstance(title, str):
+                    result["kpiLabel"] = title
+                break
+    else:
+        result["data"] = plotly_config.data
+        layout = plotly_config.layout.copy()
+        # Plotly uses {"text": "...", "font": {...}} for title, but the
+        # frontend reads layout.title as a plain string for export filenames
+        if isinstance(layout.get("title"), dict):
+            layout["title"] = layout["title"].get("text", "")
+        result["layout"] = layout
+
+    return result
 
 
 def _get_shutdown_manager(request: Request) -> ShutdownManager:
@@ -225,6 +267,28 @@ async def _stream_response(
                     "rows": result.rows,
                     "row_count": result.row_count,
                 })
+
+            # Generate chart configuration
+            if result.columns and result.rows:
+                try:
+                    recommendation = recommend_chart_type(result.columns, result.rows)
+                    if recommendation.chart_type != ChartType.TABLE:
+                        plotly_config = generate_chart_config(
+                            columns=result.columns,
+                            rows=result.rows,
+                            recommendation=recommendation,
+                            query_context=user_content,
+                        )
+                        if not plotly_config.is_fallback:
+                            chart_event = _to_frontend_chart_config(plotly_config)
+                            yield _sse_event("chart_config", chart_event)
+                            metadata["chart_config"] = chart_event
+                except Exception as exc:
+                    logger.warning(
+                        "chart_generation_failed",
+                        conversation_id=str(conversation_id),
+                        error=str(exc),
+                    )
 
             # Store query metadata
             if result.source_id:
