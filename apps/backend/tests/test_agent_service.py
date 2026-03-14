@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 from cryptography.fernet import Fernet
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 from pydantic_ai.models.test import TestModel
 
 from app.services.agent_service import (
@@ -64,14 +64,14 @@ def reset_provider_store():
 class TestCreateModelOpenAI:
     """Test model creation for the OpenAI provider."""
 
-    def test_creates_openai_chat_model(self) -> None:
-        """create_model with 'openai' returns an OpenAIChatModel."""
+    def test_creates_openai_responses_model(self) -> None:
+        """create_model with 'openai' returns an OpenAIResponsesModel."""
         model = create_model(
             provider_name="openai",
             model_name="gpt-4o",
             api_key="sk-test-key",
         )
-        assert isinstance(model, OpenAIChatModel)
+        assert isinstance(model, OpenAIResponsesModel)
 
     def test_openai_model_with_custom_model_name(self) -> None:
         """create_model supports custom OpenAI model names."""
@@ -80,7 +80,7 @@ class TestCreateModelOpenAI:
             model_name="gpt-4o-mini",
             api_key="sk-test-key",
         )
-        assert isinstance(model, OpenAIChatModel)
+        assert isinstance(model, OpenAIResponsesModel)
 
 
 class TestCreateModelAnthropic:

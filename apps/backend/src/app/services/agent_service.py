@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from sqlalchemy.orm import Session
 
@@ -206,7 +206,7 @@ def create_model(
     """
     if provider_name == ProviderName.OPENAI:
         provider = OpenAIProvider(api_key=api_key)
-        return OpenAIChatModel(model_name, provider=provider)
+        return OpenAIResponsesModel(model_name, provider=provider)
 
     if provider_name == ProviderName.ANTHROPIC:
         from pydantic_ai.providers.anthropic import AnthropicProvider
