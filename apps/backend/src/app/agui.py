@@ -90,7 +90,7 @@ def create_agui_app(
     cors_middleware = _build_cors_middleware(cors_origins)
 
     try:
-        agent = create_agent()
+        agent = create_agent(session_factory=session_factory)
     except NoProviderConfiguredError:
         logger.warning(
             "agui_no_provider",

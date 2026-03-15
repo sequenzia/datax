@@ -12,8 +12,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 
+from sqlalchemy import select, update
+from sqlalchemy.orm import Session
+
 from app.encryption import encrypt_value
 from app.logging import get_logger
+from app.models.orm import ProviderConfig
 
 logger = get_logger(__name__)
 
@@ -58,15 +62,24 @@ class ProviderRecord:
 
 
 # ---------------------------------------------------------------------------
-# In-memory store (will be replaced with PostgreSQL once DB sessions are wired)
+# ORM → dataclass conversion
 # ---------------------------------------------------------------------------
 
-_providers: dict[uuid.UUID, ProviderRecord] = {}
 
-
-def _reset_store() -> None:
-    """Reset the in-memory store. Used by tests only."""
-    _providers.clear()
+def _orm_to_record(row: ProviderConfig) -> ProviderRecord:
+    """Convert a ProviderConfig ORM instance to a ProviderRecord dataclass."""
+    return ProviderRecord(
+        id=row.id,
+        provider_name=row.provider_name,
+        model_name=row.model_name,
+        base_url=row.base_url,
+        is_default=row.is_default,
+        is_active=row.is_active,
+        has_api_key=True,
+        source="ui",
+        created_at=row.created_at,
+        encrypted_api_key=row.encrypted_api_key,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -125,23 +138,24 @@ def _is_env_var_provider(provider_id: uuid.UUID) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def list_providers() -> list[ProviderRecord]:
+def list_providers(db: Session) -> list[ProviderRecord]:
     """List all configured providers (both DB and env-var detected).
 
     Env-var providers are merged with DB providers. If an env-var provider
     has the same provider_name as a DB provider, both appear (env-var takes
     precedence for actual usage, but both are shown so the UI can differentiate).
     """
-    # Start with env-var providers
     env_providers = _detect_env_providers()
 
-    # Add all DB providers
-    db_providers = list(_providers.values())
+    stmt = select(ProviderConfig).order_by(ProviderConfig.created_at)
+    rows = db.execute(stmt).scalars().all()
+    db_providers = [_orm_to_record(row) for row in rows]
 
     return env_providers + db_providers
 
 
 def create_provider(
+    db: Session,
     provider_name: str,
     model_name: str,
     api_key: str,
@@ -151,6 +165,7 @@ def create_provider(
     """Create a new provider configuration.
 
     Args:
+        db: SQLAlchemy session.
         provider_name: Provider identifier (must be in VALID_PROVIDER_NAMES).
         model_name: Model identifier string.
         api_key: Plain-text API key to encrypt before storage.
@@ -178,33 +193,26 @@ def create_provider(
     if not api_key or not api_key.strip():
         raise ValueError("api_key must be a non-empty string")
 
-    # Encrypt the API key
     encrypted_key = encrypt_value(api_key)
 
-    # If setting as default, unset all other defaults
     if is_default:
-        _unset_all_defaults()
+        _unset_all_defaults(db)
 
-    provider_id = uuid.uuid4()
-    now = datetime.now(UTC)
-
-    record = ProviderRecord(
-        id=provider_id,
+    row = ProviderConfig(
         provider_name=provider_name,
         model_name=model_name,
+        encrypted_api_key=encrypted_key,
         base_url=base_url,
         is_default=is_default,
         is_active=True,
-        has_api_key=True,
-        source="ui",
-        created_at=now,
-        encrypted_api_key=encrypted_key,
     )
+    db.add(row)
+    db.flush()
 
-    _providers[provider_id] = record
+    record = _orm_to_record(row)
     logger.info(
         "provider_created",
-        provider_id=str(provider_id),
+        provider_id=str(record.id),
         provider_name=provider_name,
         model_name=model_name,
         is_default=is_default,
@@ -213,10 +221,11 @@ def create_provider(
     return record
 
 
-def delete_provider(provider_id: uuid.UUID) -> bool:
+def delete_provider(db: Session, provider_id: uuid.UUID) -> bool:
     """Delete a provider configuration by ID.
 
     Args:
+        db: SQLAlchemy session.
         provider_id: UUID of the provider to delete.
 
     Returns:
@@ -232,21 +241,22 @@ def delete_provider(provider_id: uuid.UUID) -> bool:
             "Remove the environment variable to unconfigure this provider."
         )
 
-    if provider_id not in _providers:
+    row = db.get(ProviderConfig, provider_id)
+    if row is None:
         raise KeyError(f"Provider {provider_id} not found")
 
-    del _providers[provider_id]
+    db.delete(row)
+    db.flush()
     logger.info("provider_deleted", provider_id=str(provider_id))
     return True
 
 
-def get_provider(provider_id: uuid.UUID) -> ProviderRecord | None:
+def get_provider(db: Session, provider_id: uuid.UUID) -> ProviderRecord | None:
     """Get a single provider by ID (checks both DB and env-var)."""
-    # Check DB first
-    if provider_id in _providers:
-        return _providers[provider_id]
+    row = db.get(ProviderConfig, provider_id)
+    if row is not None:
+        return _orm_to_record(row)
 
-    # Check env-var providers
     for p in _detect_env_providers():
         if p.id == provider_id:
             return p
@@ -254,7 +264,11 @@ def get_provider(provider_id: uuid.UUID) -> ProviderRecord | None:
     return None
 
 
-def _unset_all_defaults() -> None:
+def _unset_all_defaults(db: Session) -> None:
     """Unset is_default on all existing DB providers."""
-    for record in _providers.values():
-        record.is_default = False
+    stmt = (
+        update(ProviderConfig)
+        .where(ProviderConfig.is_default.is_(True))
+        .values(is_default=False)
+    )
+    db.execute(stmt)

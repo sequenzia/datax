@@ -276,6 +276,7 @@ def create_model(
 
 
 def resolve_provider_config(
+    db: Session,
     provider_id: str | None = None,
 ) -> ProviderRecord:
     """Resolve which provider to use for the agent.
@@ -304,7 +305,7 @@ def resolve_provider_config(
         except ValueError:
             raise InvalidProviderError(f"Invalid provider ID format: {provider_id}")
 
-        record = get_provider(pid)
+        record = get_provider(db, pid)
         if record is None:
             raise InvalidProviderError(f"Provider '{provider_id}' not found")
         if not record.is_active:
@@ -312,7 +313,7 @@ def resolve_provider_config(
         return record
 
     # Find from all providers
-    all_providers = list_providers()
+    all_providers = list_providers(db)
     if not all_providers:
         raise NoProviderConfiguredError(
             "No AI provider is configured. Please configure at least one provider "
@@ -344,6 +345,7 @@ def create_agent(
     timeout: float = 30.0,
     max_retries: int = 3,
     session: Session | None = None,
+    session_factory: Any | None = None,
 ) -> Agent[AgentDeps, str]:
     """Create a Pydantic AI Agent with the resolved provider configuration.
 
@@ -360,6 +362,8 @@ def create_agent(
         session: Optional SQLAlchemy session for querying schema metadata.
             When provided, schema context is dynamically injected into the
             system prompt. When None, only the base prompt is used.
+        session_factory: Optional SQLAlchemy session factory. Used to create
+            a session for provider resolution when ``session`` is not given.
 
     Returns:
         A configured Pydantic AI Agent ready for use.
@@ -368,7 +372,17 @@ def create_agent(
         NoProviderConfiguredError: If no provider is configured.
         InvalidProviderError: If the provider is invalid or misconfigured.
     """
-    record = resolve_provider_config(provider_id)
+    # Provider resolution needs a DB session. Use the provided session,
+    # or create a short-lived one from the factory (e.g. at startup).
+    if session is not None:
+        record = resolve_provider_config(session, provider_id)
+    elif session_factory is not None:
+        with session_factory() as db:
+            record = resolve_provider_config(db, provider_id)
+    else:
+        raise NoProviderConfiguredError(
+            "Cannot resolve provider: no database session or session_factory provided."
+        )
 
     api_key = _resolve_api_key(record.provider_name, record)
 

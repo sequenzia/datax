@@ -9,9 +9,11 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
+from app.dependencies import get_db
 from app.encryption import EncryptionError
 from app.errors import AppError
 from app.logging import get_logger
@@ -71,14 +73,16 @@ class ProviderListResponse(BaseModel):
 
 
 @router.get("", response_model=ProviderListResponse)
-async def list_providers_endpoint() -> ProviderListResponse:
+async def list_providers_endpoint(
+    db: Session = Depends(get_db),
+) -> ProviderListResponse:
     """List all configured AI providers.
 
     Returns both UI-configured providers and those detected from
     environment variables. API keys are never exposed; only a
     has_api_key boolean is included.
     """
-    records = list_providers()
+    records = list_providers(db)
     return ProviderListResponse(
         providers=[
             ProviderResponse(
@@ -98,7 +102,10 @@ async def list_providers_endpoint() -> ProviderListResponse:
 
 
 @router.post("", response_model=ProviderResponse, status_code=201)
-async def create_provider_endpoint(body: ProviderCreateRequest) -> ProviderResponse:
+async def create_provider_endpoint(
+    body: ProviderCreateRequest,
+    db: Session = Depends(get_db),
+) -> ProviderResponse:
     """Add a new AI provider configuration.
 
     Encrypts the API key using Fernet before storage. If is_default=true,
@@ -106,6 +113,7 @@ async def create_provider_endpoint(body: ProviderCreateRequest) -> ProviderRespo
     """
     try:
         record = create_provider(
+            db,
             provider_name=body.provider_name,
             model_name=body.model_name,
             api_key=body.api_key,
@@ -139,14 +147,17 @@ async def create_provider_endpoint(body: ProviderCreateRequest) -> ProviderRespo
 
 
 @router.delete("/{provider_id}", status_code=204)
-async def delete_provider_endpoint(provider_id: UUID) -> Response:
+async def delete_provider_endpoint(
+    provider_id: UUID,
+    db: Session = Depends(get_db),
+) -> Response:
     """Remove an AI provider configuration.
 
     Providers configured via environment variables cannot be deleted
     (returns 409 Conflict).
     """
     try:
-        delete_provider(provider_id)
+        delete_provider(db, provider_id)
     except PermissionError as exc:
         raise AppError(
             code="ENV_VAR_PROVIDER",

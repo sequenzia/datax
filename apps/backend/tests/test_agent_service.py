@@ -10,14 +10,19 @@ Covers:
 from __future__ import annotations
 
 import os
+import tempfile
 import uuid
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from cryptography.fernet import Fernet
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 from pydantic_ai.models.test import TestModel
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import Session, sessionmaker
 
+from app.models.base import Base
 from app.services.agent_service import (
     AgentDeps,
     InvalidProviderError,
@@ -29,7 +34,6 @@ from app.services.agent_service import (
 )
 from app.services.provider_service import (
     ProviderRecord,
-    _reset_store,
     create_provider,
 )
 
@@ -48,12 +52,50 @@ def _test_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
-@pytest.fixture(autouse=True)
-def reset_provider_store():
-    """Reset the in-memory provider store before each test."""
-    _reset_store()
-    yield
-    _reset_store()
+# ---------------------------------------------------------------------------
+# DB-backed fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def db_path():
+    """Create a temporary file for SQLite database."""
+    with tempfile.TemporaryDirectory() as d:
+        yield Path(d) / "test.db"
+
+
+@pytest.fixture
+def db_engine(db_path):
+    """Create a SQLite engine backed by a temp file with tables created."""
+    url = f"sqlite:///{db_path}"
+    engine = create_engine(url, connect_args={"check_same_thread": False})
+
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    Base.metadata.create_all(engine)
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture
+def session_factory(db_engine):
+    """Create a sessionmaker bound to the test engine."""
+    return sessionmaker(bind=db_engine, autocommit=False, autoflush=False)
+
+
+@pytest.fixture
+def db_session(session_factory) -> Session:
+    """Yield a DB session for service-layer tests, with rollback on teardown."""
+    session = session_factory()
+    try:
+        yield session
+    finally:
+        session.rollback()
+        session.close()
 
 
 # ---------------------------------------------------------------------------
@@ -154,11 +196,12 @@ class TestCreateModelInvalid:
 class TestResolveApiKey:
     """Test API key resolution with env var override."""
 
-    def test_env_var_overrides_db_key(self) -> None:
+    def test_env_var_overrides_db_key(self, db_session) -> None:
         """Env var API key takes precedence over DB-stored key."""
         env = _test_env({"DATAX_OPENAI_API_KEY": "sk-env-key"})
         with patch.dict(os.environ, env, clear=True):
             record = create_provider(
+                db_session,
                 provider_name="openai",
                 model_name="gpt-4o",
                 api_key="sk-db-key",
@@ -166,10 +209,11 @@ class TestResolveApiKey:
             resolved = _resolve_api_key("openai", record)
             assert resolved == "sk-env-key"
 
-    def test_db_key_used_when_no_env_var(self) -> None:
+    def test_db_key_used_when_no_env_var(self, db_session) -> None:
         """DB-stored key used when no env var is set."""
         with patch.dict(os.environ, _test_env(), clear=True):
             record = create_provider(
+                db_session,
                 provider_name="openai",
                 model_name="gpt-4o",
                 api_key="sk-db-key",
@@ -195,11 +239,12 @@ class TestResolveApiKey:
             with pytest.raises(InvalidProviderError, match="No API key available"):
                 _resolve_api_key("openai", record)
 
-    def test_env_var_whitespace_only_falls_through(self) -> None:
+    def test_env_var_whitespace_only_falls_through(self, db_session) -> None:
         """Whitespace-only env var falls through to DB key."""
         env = _test_env({"DATAX_OPENAI_API_KEY": "   "})
         with patch.dict(os.environ, env, clear=True):
             record = create_provider(
+                db_session,
                 provider_name="openai",
                 model_name="gpt-4o",
                 api_key="sk-db-key",
@@ -216,73 +261,77 @@ class TestResolveApiKey:
 class TestResolveProviderConfig:
     """Test provider config resolution logic."""
 
-    def test_no_providers_raises(self) -> None:
+    def test_no_providers_raises(self, db_session) -> None:
         """No providers configured raises NoProviderConfiguredError."""
         with patch.dict(os.environ, _test_env(), clear=True):
             with pytest.raises(NoProviderConfiguredError, match="No AI provider"):
-                resolve_provider_config()
+                resolve_provider_config(db_session)
 
-    def test_default_provider_selected(self) -> None:
+    def test_default_provider_selected(self, db_session) -> None:
         """Default provider is selected when no ID given."""
         with patch.dict(os.environ, _test_env(), clear=True):
             create_provider(
+                db_session,
                 provider_name="openai",
                 model_name="gpt-4o",
                 api_key="sk-test",
                 is_default=False,
             )
             create_provider(
+                db_session,
                 provider_name="anthropic",
                 model_name="claude-sonnet-4-20250514",
                 api_key="sk-test-2",
                 is_default=True,
             )
-            result = resolve_provider_config()
+            result = resolve_provider_config(db_session)
             assert result.provider_name == "anthropic"
             assert result.is_default is True
 
-    def test_first_active_used_when_no_default(self) -> None:
+    def test_first_active_used_when_no_default(self, db_session) -> None:
         """First active provider used when none is marked as default."""
         with patch.dict(os.environ, _test_env(), clear=True):
             create_provider(
+                db_session,
                 provider_name="openai",
                 model_name="gpt-4o",
                 api_key="sk-test",
                 is_default=False,
             )
-            result = resolve_provider_config()
+            result = resolve_provider_config(db_session)
             assert result.provider_name == "openai"
 
-    def test_env_var_provider_used_when_only_env(self) -> None:
+    def test_env_var_provider_used_when_only_env(self, db_session) -> None:
         """Env var provider is resolved when it's the only provider."""
         env = _test_env({"DATAX_OPENAI_API_KEY": "sk-env-key"})
         with patch.dict(os.environ, env, clear=True):
-            result = resolve_provider_config()
+            result = resolve_provider_config(db_session)
             assert result.provider_name == "openai"
             assert result.source == "env_var"
 
-    def test_specific_provider_id(self) -> None:
+    def test_specific_provider_id(self, db_session) -> None:
         """Specific provider ID is resolved correctly."""
         with patch.dict(os.environ, _test_env(), clear=True):
             record = create_provider(
+                db_session,
                 provider_name="openai",
                 model_name="gpt-4o",
                 api_key="sk-test",
             )
-            result = resolve_provider_config(provider_id=str(record.id))
+            result = resolve_provider_config(db_session, provider_id=str(record.id))
             assert result.id == record.id
 
-    def test_invalid_provider_id_raises(self) -> None:
+    def test_invalid_provider_id_raises(self, db_session) -> None:
         """Invalid provider ID format raises InvalidProviderError."""
         with pytest.raises(InvalidProviderError, match="Invalid provider ID"):
-            resolve_provider_config(provider_id="not-a-uuid")
+            resolve_provider_config(db_session, provider_id="not-a-uuid")
 
-    def test_nonexistent_provider_id_raises(self) -> None:
+    def test_nonexistent_provider_id_raises(self, db_session) -> None:
         """Non-existent provider ID raises InvalidProviderError."""
         fake_id = str(uuid.uuid4())
         with patch.dict(os.environ, _test_env(), clear=True):
             with pytest.raises(InvalidProviderError, match="not found"):
-                resolve_provider_config(provider_id=fake_id)
+                resolve_provider_config(db_session, provider_id=fake_id)
 
 
 # ---------------------------------------------------------------------------
@@ -293,74 +342,78 @@ class TestResolveProviderConfig:
 class TestCreateAgent:
     """Test the create_agent factory function."""
 
-    def test_creates_agent_with_openai(self) -> None:
+    def test_creates_agent_with_openai(self, session_factory) -> None:
         """create_agent creates an agent with OpenAI provider."""
         env = _test_env({"DATAX_OPENAI_API_KEY": "sk-test-openai"})
         with patch.dict(os.environ, env, clear=True):
-            agent = create_agent()
+            agent = create_agent(session_factory=session_factory)
             assert agent is not None
             assert agent.name == "datax-analytics"
 
-    def test_creates_agent_with_anthropic(self) -> None:
+    def test_creates_agent_with_anthropic(self, session_factory) -> None:
         """create_agent creates an agent with Anthropic provider."""
         env = _test_env({"DATAX_ANTHROPIC_API_KEY": "sk-ant-test"})
         with patch.dict(os.environ, env, clear=True):
-            agent = create_agent()
+            agent = create_agent(session_factory=session_factory)
             assert agent is not None
             assert agent.name == "datax-analytics"
 
-    def test_creates_agent_with_gemini(self) -> None:
+    def test_creates_agent_with_gemini(self, session_factory) -> None:
         """create_agent creates an agent with Gemini provider."""
         env = _test_env({"DATAX_GEMINI_API_KEY": "AIzaSy-test"})
         with patch.dict(os.environ, env, clear=True):
-            agent = create_agent()
+            agent = create_agent(session_factory=session_factory)
             assert agent is not None
             assert agent.name == "datax-analytics"
 
-    def test_creates_agent_with_openai_compatible(self) -> None:
+    def test_creates_agent_with_openai_compatible(self, db_session, session_factory) -> None:
         """create_agent creates an agent with OpenAI-compatible provider."""
         with patch.dict(os.environ, _test_env(), clear=True):
             create_provider(
+                db_session,
                 provider_name="openai_compatible",
                 model_name="local-llm",
                 api_key="sk-test",
                 base_url="http://localhost:8080/v1",
                 is_default=True,
             )
-            agent = create_agent()
+            db_session.commit()
+            agent = create_agent(session_factory=session_factory)
             assert agent is not None
             assert agent.name == "datax-analytics"
 
-    def test_no_provider_raises_clear_error(self) -> None:
+    def test_no_provider_raises_clear_error(self, session_factory) -> None:
         """create_agent with no configured provider raises NoProviderConfiguredError."""
         with patch.dict(os.environ, _test_env(), clear=True):
             with pytest.raises(NoProviderConfiguredError, match="No AI provider"):
-                create_agent()
+                create_agent(session_factory=session_factory)
 
-    def test_provider_switchable_without_restart(self) -> None:
+    def test_provider_switchable_without_restart(self, db_session, session_factory) -> None:
         """Different providers can be used by different create_agent calls."""
         env = _test_env({"DATAX_OPENAI_API_KEY": "sk-openai"})
         with patch.dict(os.environ, env, clear=True):
             # Create agent with env var openai
-            agent1 = create_agent()
+            agent1 = create_agent(session_factory=session_factory)
             assert agent1 is not None
 
             # Create another provider and use it specifically
             record = create_provider(
+                db_session,
                 provider_name="openai",
                 model_name="gpt-4o-mini",
                 api_key="sk-other",
             )
-            agent2 = create_agent(provider_id=str(record.id))
+            db_session.commit()
+            agent2 = create_agent(provider_id=str(record.id), session_factory=session_factory)
             assert agent2 is not None
             # They should be different agent instances
             assert agent1 is not agent2
 
-    def test_agent_has_system_prompt(self) -> None:
+    def test_agent_has_system_prompt(self, session_factory) -> None:
         """Created agent has the analytics system prompt."""
         env = _test_env({"DATAX_OPENAI_API_KEY": "sk-test"})
         with patch.dict(os.environ, env, clear=True):
-            agent = create_agent()
+            agent = create_agent(session_factory=session_factory)
             # Check that instructions contain the system prompt
             assert agent._instructions is not None
             assert "DataX" in agent._instructions
@@ -397,11 +450,11 @@ class TestAgentIntegration:
     """Integration tests using pydantic-ai's TestModel."""
 
     @pytest.mark.asyncio
-    async def test_agent_responds_to_basic_prompt(self) -> None:
+    async def test_agent_responds_to_basic_prompt(self, session_factory) -> None:
         """Agent created via factory can respond to a basic prompt using TestModel."""
         env = _test_env({"DATAX_OPENAI_API_KEY": "sk-test"})
         with patch.dict(os.environ, env, clear=True):
-            agent = create_agent()
+            agent = create_agent(session_factory=session_factory)
 
             # Override the model with TestModel for testing.
             # call_tools=[] prevents TestModel from trying to invoke
@@ -425,11 +478,11 @@ class TestAgentIntegration:
             assert len(result.output) > 0
 
     @pytest.mark.asyncio
-    async def test_agent_with_empty_deps(self) -> None:
+    async def test_agent_with_empty_deps(self, session_factory) -> None:
         """Agent works with default empty deps."""
         env = _test_env({"DATAX_OPENAI_API_KEY": "sk-test"})
         with patch.dict(os.environ, env, clear=True):
-            agent = create_agent()
+            agent = create_agent(session_factory=session_factory)
             test_model = TestModel(
                 custom_output_text="I need more context about your data.",
                 call_tools=[],

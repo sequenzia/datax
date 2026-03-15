@@ -12,21 +12,25 @@ Covers:
 from __future__ import annotations
 
 import os
+import tempfile
 import uuid
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings
 from app.encryption import decrypt_value, encrypt_value
 from app.main import create_app
+from app.models.base import Base
 from app.services.provider_service import (
     VALID_PROVIDER_NAMES,
     _detect_env_providers,
     _is_env_var_provider,
-    _reset_store,
     create_provider,
     delete_provider,
     list_providers,
@@ -47,25 +51,70 @@ def _test_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
-def _test_settings(extra_env: dict[str, str] | None = None) -> Settings:
+# ---------------------------------------------------------------------------
+# DB-backed fixtures for service-layer and integration tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def db_path():
+    """Create a temporary file for SQLite database."""
+    with tempfile.TemporaryDirectory() as d:
+        yield Path(d) / "test.db"
+
+
+def _test_settings(db_path: Path) -> Settings:
     """Create test settings with required fields."""
-    env = _test_env(extra_env)
+    env = {
+        "DATABASE_URL": f"sqlite:///{db_path}",
+        "DATAX_ENCRYPTION_KEY": TEST_FERNET_KEY,
+        "DATAX_DUCKDB_PATH": ":memory:",
+    }
     with patch.dict(os.environ, env, clear=True):
         return Settings()  # type: ignore[call-arg]
 
 
-@pytest.fixture(autouse=True)
-def reset_provider_store():
-    """Reset the in-memory provider store before each test."""
-    _reset_store()
-    yield
-    _reset_store()
+@pytest.fixture
+def db_engine(db_path):
+    """Create a SQLite engine backed by a temp file with tables created."""
+    url = f"sqlite:///{db_path}"
+    engine = create_engine(url, connect_args={"check_same_thread": False})
+
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    Base.metadata.create_all(engine)
+    yield engine
+    engine.dispose()
 
 
 @pytest.fixture
-def app():
-    """Create a test FastAPI app instance."""
-    return create_app(settings=_test_settings())
+def session_factory(db_engine):
+    """Create a sessionmaker bound to the test engine."""
+    return sessionmaker(bind=db_engine, autocommit=False, autoflush=False)
+
+
+@pytest.fixture
+def db_session(session_factory) -> Session:
+    """Yield a DB session for service-layer tests, with rollback on teardown."""
+    session = session_factory()
+    try:
+        yield session
+    finally:
+        session.rollback()
+        session.close()
+
+
+@pytest.fixture
+def app(db_path, db_engine, session_factory):
+    """Create a FastAPI app with a test SQLite database."""
+    application = create_app(settings=_test_settings(db_path))
+    application.state.db_engine = db_engine
+    application.state.session_factory = session_factory
+    return application
 
 
 @pytest.fixture
@@ -99,11 +148,12 @@ class TestEncryptionRoundTrip:
             ct2 = encrypt_value("sk-key-two")
             assert ct1 != ct2
 
-    def test_encrypted_api_key_stored_on_provider(self) -> None:
+    def test_encrypted_api_key_stored_on_provider(self, db_session) -> None:
         """Creating a provider stores the encrypted API key internally."""
         with patch.dict(os.environ, _test_env(), clear=True):
             api_key = "sk-stored-test-key"
             record = create_provider(
+                db_session,
                 provider_name="openai",
                 model_name="gpt-4o",
                 api_key=api_key,
@@ -589,10 +639,11 @@ class TestErrorHandling:
 class TestServiceLayer:
     """Direct tests for the provider service layer."""
 
-    def test_create_provider_returns_record(self) -> None:
+    def test_create_provider_returns_record(self, db_session) -> None:
         """create_provider returns a ProviderRecord with correct fields."""
         with patch.dict(os.environ, _test_env(), clear=True):
             record = create_provider(
+                db_session,
                 provider_name="openai",
                 model_name="gpt-4o",
                 api_key="sk-test-service",
@@ -603,50 +654,53 @@ class TestServiceLayer:
             assert record.source == "ui"
             assert record.has_api_key is True
 
-    def test_create_invalid_provider_raises(self) -> None:
+    def test_create_invalid_provider_raises(self, db_session) -> None:
         """create_provider raises ValueError for invalid provider_name."""
         with patch.dict(os.environ, _test_env(), clear=True):
             with pytest.raises(ValueError, match="Invalid provider_name"):
                 create_provider(
+                    db_session,
                     provider_name="fake_provider",
                     model_name="model",
                     api_key="key",
                 )
 
-    def test_delete_env_var_provider_raises(self) -> None:
+    def test_delete_env_var_provider_raises(self, db_session) -> None:
         """delete_provider raises PermissionError for env var providers."""
         env = _test_env({"DATAX_OPENAI_API_KEY": "sk-env"})
         with patch.dict(os.environ, env, clear=True):
             providers = _detect_env_providers()
             env_id = providers[0].id
             with pytest.raises(PermissionError, match="environment variable"):
-                delete_provider(env_id)
+                delete_provider(db_session, env_id)
 
-    def test_delete_nonexistent_raises_key_error(self) -> None:
+    def test_delete_nonexistent_raises_key_error(self, db_session) -> None:
         """delete_provider raises KeyError for nonexistent provider."""
         with patch.dict(os.environ, _test_env(), clear=True):
             with pytest.raises(KeyError):
-                delete_provider(uuid.uuid4())
+                delete_provider(db_session, uuid.uuid4())
 
-    def test_list_includes_both_env_and_db(self) -> None:
+    def test_list_includes_both_env_and_db(self, db_session) -> None:
         """list_providers includes both env var and DB providers."""
         env = _test_env({"DATAX_OPENAI_API_KEY": "sk-env"})
         with patch.dict(os.environ, env, clear=True):
             create_provider(
+                db_session,
                 provider_name="anthropic",
                 model_name="claude-sonnet-4-20250514",
                 api_key="sk-db",
             )
-            providers = list_providers()
+            providers = list_providers(db_session)
 
         sources = {p.source for p in providers}
         assert "env_var" in sources
         assert "ui" in sources
 
-    def test_default_uniqueness_at_service_level(self) -> None:
+    def test_default_uniqueness_at_service_level(self, db_session) -> None:
         """Setting a new default unsets the old one in the service layer."""
         with patch.dict(os.environ, _test_env(), clear=True):
             first = create_provider(
+                db_session,
                 provider_name="openai",
                 model_name="gpt-4o",
                 api_key="sk-first",
@@ -655,6 +709,7 @@ class TestServiceLayer:
             assert first.is_default is True
 
             create_provider(
+                db_session,
                 provider_name="anthropic",
                 model_name="claude-sonnet-4-20250514",
                 api_key="sk-second",
@@ -662,7 +717,7 @@ class TestServiceLayer:
             )
 
             # Check the first one is no longer default
-            providers = list_providers()
+            providers = list_providers(db_session)
             db_providers = [p for p in providers if p.source == "ui"]
             defaults = [p for p in db_providers if p.is_default]
             assert len(defaults) == 1
