@@ -145,7 +145,7 @@ export function ConnectionDetailPage() {
           The connection you are looking for does not exist or has been deleted.
         </p>
         <Link
-          to="/connections"
+          to="/data"
           className="text-sm text-primary underline underline-offset-4 hover:text-primary/80"
         >
           Back to Connections
@@ -165,7 +165,7 @@ export function ConnectionDetailPage() {
             : "An unexpected error occurred."}
         </p>
         <Link
-          to="/connections"
+          to="/data"
           className="text-sm text-primary underline underline-offset-4 hover:text-primary/80"
         >
           Back to Connections
@@ -199,7 +199,7 @@ export function ConnectionDetailPage() {
     setDeleteError(null);
     deleteMutation.mutate(id!, {
       onSuccess: () => {
-        navigate("/connections");
+        navigate("/data");
       },
       onError: (err) => {
         setDeleteError(
@@ -241,7 +241,7 @@ export function ConnectionDetailPage() {
             <ChevronRight className="size-3.5" />
           </li>
           <li>
-            <Link to="/connections" className="hover:text-foreground">
+            <Link to="/data" className="hover:text-foreground">
               Connections
             </Link>
           </li>
@@ -293,7 +293,7 @@ export function ConnectionDetailPage() {
             Refresh Schema
           </Button>
           <Button variant="outline" size="sm" asChild>
-            <Link to={`/connections/${id}/edit`}>
+            <Link to={`/data/connection/${id}/edit`}>
               <Pencil />
               Edit
             </Link>

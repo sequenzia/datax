@@ -213,7 +213,7 @@ function ConnectionFormInner({
         { id: connectionId, body },
         {
           onSuccess: (result) => {
-            navigate(`/connections/${result.id}`);
+            navigate(`/data/connection/${result.id}`);
           },
           onError: (err) => {
             setSaveError(
@@ -235,7 +235,7 @@ function ConnectionFormInner({
         },
         {
           onSuccess: (result) => {
-            navigate(`/connections/${result.id}`);
+            navigate(`/data/connection/${result.id}`);
           },
           onError: (err) => {
             setSaveError(
@@ -267,7 +267,7 @@ function ConnectionFormInner({
             <ChevronRight className="size-3.5" />
           </li>
           <li>
-            <Link to="/connections" className="hover:text-foreground">
+            <Link to="/data" className="hover:text-foreground">
               Connections
             </Link>
           </li>
@@ -546,7 +546,7 @@ function ConnectionFormInner({
           {isEdit ? "Update Connection" : "Save Connection"}
         </Button>
         <Button variant="outline" asChild>
-          <Link to="/connections">Cancel</Link>
+          <Link to="/data">Cancel</Link>
         </Button>
       </div>
     </div>
@@ -573,7 +573,7 @@ export function ConnectionFormPage() {
           The connection ID provided is not a valid identifier.
         </p>
         <Link
-          to="/connections"
+          to="/data"
           className="text-sm text-primary underline underline-offset-4 hover:text-primary/80"
         >
           Back to Connections

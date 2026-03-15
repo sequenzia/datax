@@ -529,7 +529,7 @@ function ConnectionCard({
             <RefreshCw /> Refresh
           </Button>
           <Button variant="outline" size="xs" asChild disabled={isBusy}>
-            <Link to={`/data/connection/${connection.id}`}>
+            <Link to={`/data/connection/${connection.id}/edit`}>
               <Pencil /> Edit
             </Link>
           </Button>

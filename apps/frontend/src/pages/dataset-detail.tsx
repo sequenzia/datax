@@ -223,7 +223,7 @@ export function DatasetDetailPage() {
             <ChevronRight className="size-3.5" />
           </li>
           <li>
-            <Link to="/datasets" className="hover:text-foreground">
+            <Link to="/data" className="hover:text-foreground">
               Datasets
             </Link>
           </li>

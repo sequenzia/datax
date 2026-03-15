@@ -17,6 +17,15 @@ const SettingsPage = lazy(() =>
 const DataPage = lazy(() =>
   import("@/pages/data").then((m) => ({ default: m.DataPage })),
 );
+const DatasetDetailPage = lazy(() =>
+  import("@/pages/dataset-detail").then((m) => ({ default: m.DatasetDetailPage })),
+);
+const ConnectionDetailPage = lazy(() =>
+  import("@/pages/connection-detail").then((m) => ({ default: m.ConnectionDetailPage })),
+);
+const ConnectionFormPage = lazy(() =>
+  import("@/pages/connection-form").then((m) => ({ default: m.ConnectionFormPage })),
+);
 const DashboardsPage = lazy(() =>
   import("@/pages/dashboards").then((m) => ({ default: m.DashboardsPage })),
 );
@@ -38,7 +47,10 @@ function App() {
           <Route path="sql" element={<SqlEditorPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="data" element={<DataPage />} />
-          <Route path="data/:type/:id" element={<DataPage />} />
+          <Route path="data/dataset/:id" element={<DatasetDetailPage />} />
+          <Route path="data/connection/new" element={<ConnectionFormPage />} />
+          <Route path="data/connection/:id/edit" element={<ConnectionFormPage />} />
+          <Route path="data/connection/:id" element={<ConnectionDetailPage />} />
           <Route path="dashboards" element={<DashboardsPage />} />
           <Route path="dashboards/:dashboardId" element={<DashboardsPage />} />
           <Route path="explore" element={<ExplorePage />} />
