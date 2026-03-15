@@ -315,6 +315,16 @@ export function fetchConversationDetail(
   return apiFetch<ConversationDetail>(`/conversations/${id}`);
 }
 
+export function saveMessage(
+  conversationId: string,
+  body: { role: "user" | "assistant"; content: string },
+): Promise<Message> {
+  return apiMutate<Message>(`/conversations/${conversationId}/messages`, {
+    method: "POST",
+    body,
+  });
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Bookmarks                                                                  */
 /* -------------------------------------------------------------------------- */

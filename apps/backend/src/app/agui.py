@@ -31,7 +31,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from app.logging import get_logger
@@ -122,6 +122,22 @@ def _extract_selected_sources(body: dict[str, Any]) -> list[dict[str, str]]:
     if result:
         logger.debug("agui_selected_sources", count=len(result))
     return result
+
+
+async def _empty_messages_noop(body: dict[str, Any]) -> Response:
+    """Return a no-op SSE stream when CopilotKit connects with no messages."""
+    from ag_ui.core import RunFinishedEvent, RunStartedEvent
+    from ag_ui.encoder import EventEncoder
+
+    thread_id = body.get("threadId") or body.get("thread_id", "")
+    run_id = body.get("runId") or body.get("run_id", "")
+    encoder = EventEncoder()
+
+    async def generate():
+        yield encoder.encode(RunStartedEvent(thread_id=thread_id, run_id=run_id))
+        yield encoder.encode(RunFinishedEvent(thread_id=thread_id, run_id=run_id))
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 def _build_cors_middleware(cors_origins: list[str]) -> Middleware:
@@ -233,6 +249,9 @@ def create_agui_app(
             return JSONResponse(agent_info_response)
         body = _unwrap_envelope(body, request)
         _ensure_run_defaults(body, request)
+
+        if not body.get("messages"):
+            return await _empty_messages_noop(body)
 
         # Build per-request deps with filtered schema context
         selected_sources = _extract_selected_sources(body)

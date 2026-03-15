@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { ChatInput } from "@/components/chat/chat-input";
 import { MessageBubble } from "@/components/chat/message-bubble";
 import { useChatStore } from "@/stores/chat-store";
+import { saveMessage } from "@/lib/api";
 import { useAiStatus } from "@/hooks/use-ai-status";
 import { useDatasetList } from "@/hooks/use-datasets";
 import { useConnectionList } from "@/hooks/use-connections";
@@ -37,6 +38,7 @@ export function ChatPage() {
     sendMessage,
     isLoading: copilotIsLoading,
     stopGeneration,
+    reset: resetCopilot,
   } = useCopilotChatInternal();
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -65,6 +67,38 @@ export function ChatPage() {
     }
   }, [urlConversationId, conversationId, switchConversation]);
 
+  // Reset CopilotKit state when conversation changes (new chat or switching conversations)
+  const prevConversationIdRef = useRef(conversationId);
+  useEffect(() => {
+    if (prevConversationIdRef.current !== conversationId) {
+      if (prevConversationIdRef.current != null) {
+        resetCopilot();
+      }
+      prevConversationIdRef.current = conversationId;
+    }
+  }, [conversationId, resetCopilot]);
+
+  // Persist assistant message when response completes (loading: true → false)
+  const prevLoadingRef = useRef(false);
+  useEffect(() => {
+    if (prevLoadingRef.current && !copilotIsLoading) {
+      const currentConvId = useChatStore.getState().conversationId;
+      if (currentConvId) {
+        const assistantMsgs = copilotMessages.filter(
+          (m) => m.role === "assistant" && typeof m.content === "string" && m.content.length > 0,
+        );
+        const lastAssistant = assistantMsgs[assistantMsgs.length - 1];
+        if (lastAssistant) {
+          saveMessage(currentConvId, {
+            role: "assistant",
+            content: lastAssistant.content as string,
+          }).catch(() => {});
+        }
+      }
+    }
+    prevLoadingRef.current = copilotIsLoading;
+  }, [copilotIsLoading, copilotMessages]);
+
   // Auto-scroll to bottom when new messages appear
   const scrollToBottom = useCallback(() => {
     if (isUserNearBottom.current) {
@@ -86,14 +120,19 @@ export function ChatPage() {
   const handleSend = useCallback(async (text: string) => {
     useChatStore.getState().setPendingMessage(null);
 
-    if (!conversationId) {
+    let activeConversationId = conversationId;
+    if (!activeConversationId) {
       const newId = await useChatStore.getState().newConversation();
       if (newId) {
+        activeConversationId = newId;
         navigate(`/chat/${newId}`, { replace: true });
       } else {
         return;
       }
     }
+
+    // Persist user message (fire-and-forget)
+    saveMessage(activeConversationId, { role: "user", content: text }).catch(() => {});
 
     await sendMessage({
       id: crypto.randomUUID(),

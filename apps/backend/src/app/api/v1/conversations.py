@@ -177,11 +177,53 @@ def get_conversation(conversation_id: UUID, db: Session = Depends(get_db)) -> di
                 "id": str(m.id),
                 "role": m.role,
                 "content": m.content,
-                "metadata": m.metadata_,
+                "metadata": None,
                 "created_at": m.created_at.isoformat() if m.created_at else None,
             }
             for m in conversation.messages
         ],
+    }
+
+
+class CreateMessageRequest(BaseModel):
+    """Request body for creating a message in a conversation."""
+
+    role: str = Field(..., pattern="^(user|assistant)$")
+    content: str = Field(..., min_length=1)
+
+
+@router.post("/{conversation_id}/messages", status_code=201)
+def create_message(
+    conversation_id: UUID,
+    body: CreateMessageRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Persist a single message (user or assistant) to a conversation."""
+    conversation = db.get(Conversation, conversation_id)
+    if conversation is None:
+        raise AppError(
+            code="NOT_FOUND",
+            message=f"Conversation {conversation_id} not found",
+            status_code=404,
+        )
+
+    message = Message(conversation_id=conversation_id, role=body.role, content=body.content)
+    db.add(message)
+    db.flush()
+
+    logger.info(
+        "message_created",
+        conversation_id=str(conversation_id),
+        message_id=str(message.id),
+        role=body.role,
+    )
+
+    return {
+        "id": str(message.id),
+        "role": message.role,
+        "content": message.content,
+        "metadata": None,
+        "created_at": message.created_at.isoformat() if message.created_at else None,
     }
 
 
