@@ -16,6 +16,7 @@ export function useCopilotProfileAction() {
   useCopilotAction({
     name: "showProfile",
     description: "Display data profiling statistics for a dataset",
+    available: "disabled",
     parameters: [
       {
         name: "dataset_id",
@@ -56,6 +57,7 @@ export function useCopilotTableAction() {
   useCopilotAction({
     name: "showTable",
     description: "Display query results as an interactive data table",
+    available: "disabled",
     parameters: [
       {
         name: "columns",
@@ -128,6 +130,7 @@ export function useCopilotChartAction() {
     name: "showChart",
     description:
       "Display an interactive Plotly chart with editing controls for chart type switching and axis assignment",
+    available: "disabled",
     parameters: [
       {
         name: "chart_config",
@@ -248,6 +251,7 @@ export function useCopilotExploreAction() {
     name: "exploreDataset",
     description:
       "Display an interactive data explorer for browsing dataset columns, viewing distributions, and filtering",
+    available: "disabled",
     parameters: [
       {
         name: "dataset_id",
@@ -289,6 +293,7 @@ export function useCopilotFollowupsAction() {
     name: "suggestFollowups",
     description:
       "Display contextual follow-up suggestion chips when interesting patterns are detected in query results",
+    available: "disabled",
     parameters: [
       {
         name: "suggestions",
@@ -317,6 +322,7 @@ export function useCopilotBookmarkAction() {
     name: "showBookmark",
     description:
       "Display a saved bookmark with its SQL query and chart configuration",
+    available: "disabled",
     parameters: [
       {
         name: "bookmark_id",
