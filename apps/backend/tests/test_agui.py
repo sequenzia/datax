@@ -23,7 +23,7 @@ from sqlalchemy.orm import sessionmaker
 
 from starlette.responses import Response
 
-from app.agui import _unwrap_envelope, create_agui_app
+from app.agui import _ensure_run_defaults, _unwrap_envelope, create_agui_app
 from app.config import Settings
 from app.models.base import Base
 
@@ -525,6 +525,68 @@ class TestAGUIEnvelopeUnwrap:
                 body = response.json()
                 assert "agents" in body
 
+
+# ---------------------------------------------------------------------------
+# Tool schema validity (stream crash prevention)
+# ---------------------------------------------------------------------------
+
+
+class TestToolSchemaValidity:
+    """Ensure tool parameter schemas are valid for LLM function calling APIs.
+
+    OpenAI (and compatible providers) require every JSON Schema element to have
+    an explicit ``type`` key. Using ``Any`` in tool parameter annotations
+    generates ``{"items": {}}`` which is rejected mid-stream, crashing the
+    SSE connection.
+    """
+
+    def test_no_empty_schema_in_tool_params(self) -> None:
+        """No tool generates an empty {} schema node (missing 'type' key).
+
+        Walks every tool's parameter JSON schema tree and asserts there are
+        no empty ``{}`` dicts, which would cause OpenAI to reject the tool
+        definition with: "schema must have a 'type' key".
+        """
+        from pydantic_ai import Agent
+
+        from app.services.agent_tools import AgentDeps, register_tools
+
+        agent: Agent[AgentDeps, str] = Agent(
+            "test",
+            deps_type=AgentDeps,
+        )
+        register_tools(agent)
+
+        def _find_empty_schemas(obj: Any, path: str = "") -> list[str]:
+            """Walk a JSON schema tree and collect paths to empty {} nodes."""
+            found: list[str] = []
+            if isinstance(obj, dict):
+                if obj == {}:
+                    found.append(path or "(root)")
+                else:
+                    for k, v in obj.items():
+                        found.extend(_find_empty_schemas(v, f"{path}.{k}"))
+            elif isinstance(obj, list):
+                for i, item in enumerate(obj):
+                    found.extend(_find_empty_schemas(item, f"{path}[{i}]"))
+            return found
+
+        tools = agent._function_toolset.tools
+        assert len(tools) > 0, "Expected at least one tool to be registered"
+
+        for name, tool in tools.items():
+            schema = tool.function_schema.json_schema
+            issues = _find_empty_schemas(schema)
+            assert not issues, (
+                f"Tool '{name}' has empty {{}} schema (no 'type' key) at: "
+                f"{', '.join(issues)}. "
+                f"Replace Any with explicit types (e.g., str | int | float | bool | None)."
+            )
+
+
+class TestAGUIEnvelopeNoProvider:
+    """Test CopilotKit envelope with no provider configured."""
+
     @pytest.mark.asyncio
     async def test_no_provider_envelope_returns_503(self, session_factory) -> None:
         """No-provider path returns 503 (not 422) for envelope format."""
@@ -543,3 +605,128 @@ class TestAGUIEnvelopeUnwrap:
                 assert response.status_code == 503
                 body = response.json()
                 assert body["error"]["code"] == "NO_PROVIDER_CONFIGURED"
+
+
+# ---------------------------------------------------------------------------
+# RunAgentInput defaults injection (422 fix for CopilotKit v1.54 + pydantic-ai 0.8.1)
+# ---------------------------------------------------------------------------
+
+# Payload missing the four required RunAgentInput fields.
+_PAYLOAD_MISSING_DEFAULTS: dict[str, Any] = {
+    "threadId": "t-1",
+    "runId": "r-1",
+    "messages": [{"id": "m1", "role": "user", "content": "hi"}],
+}
+
+# Envelope wrapping a body that also lacks the four fields.
+_ENVELOPE_MISSING_DEFAULTS: dict[str, Any] = {
+    "method": "agent/connect",
+    "params": {"agentId": "datax-analytics"},
+    "body": {
+        "threadId": "t-1",
+        "runId": "r-1",
+        "messages": [{"id": "m1", "role": "user", "content": "hi"}],
+    },
+}
+
+
+class TestAGUIRunDefaults:
+    """Tests for _ensure_run_defaults injection logic."""
+
+    # -- Unit tests ----------------------------------------------------------
+
+    def test_injects_missing_fields(self) -> None:
+        """_ensure_run_defaults adds missing required fields."""
+
+        class FakeRequest:
+            _json: dict[str, Any] | None = None
+
+        req = FakeRequest()
+        body: dict[str, Any] = {"threadId": "t-1", "runId": "r-1", "messages": []}
+        result = _ensure_run_defaults(body, req)  # type: ignore[arg-type]
+        assert result["state"] == {}
+        assert result["tools"] == []
+        assert result["context"] == []
+        assert result["forwardedProps"] == {}
+        # Should have patched request._json since fields were added
+        assert req._json is result
+
+    def test_preserves_existing_values(self) -> None:
+        """_ensure_run_defaults does NOT overwrite existing values."""
+
+        class FakeRequest:
+            _json: dict[str, Any] | None = None
+
+        req = FakeRequest()
+        existing_state = {"counter": 42}
+        existing_tools = [{"name": "my_tool"}]
+        body: dict[str, Any] = {
+            "threadId": "t-1",
+            "runId": "r-1",
+            "messages": [],
+            "state": existing_state,
+            "tools": existing_tools,
+            "context": [],
+            "forwardedProps": {},
+        }
+        result = _ensure_run_defaults(body, req)  # type: ignore[arg-type]
+        assert result["state"] is existing_state
+        assert result["tools"] is existing_tools
+        # No fields were added, so request._json should be untouched
+        assert req._json is None
+
+    # -- Integration tests ---------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_missing_defaults_returns_200(self, session_factory) -> None:
+        """Flat payload missing the four fields returns 200, not 422."""
+        from unittest.mock import AsyncMock
+
+        mock_response = Response(status_code=200, content=b"ok")
+
+        env = _test_env({"DATAX_OPENAI_API_KEY": "sk-test"})
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("app.agui.handle_ag_ui_request", new_callable=AsyncMock) as mock_handler,
+        ):
+            mock_handler.return_value = mock_response
+            app = create_agui_app(
+                cors_origins=["http://localhost:5173"],
+                session_factory=session_factory,
+            )
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.post(
+                    "/",
+                    json=_PAYLOAD_MISSING_DEFAULTS,
+                    headers={"Content-Type": "application/json"},
+                )
+                assert response.status_code == 200
+                mock_handler.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_envelope_missing_defaults_returns_200(self, session_factory) -> None:
+        """Envelope payload with inner body missing fields returns 200, not 422."""
+        from unittest.mock import AsyncMock
+
+        mock_response = Response(status_code=200, content=b"ok")
+
+        env = _test_env({"DATAX_OPENAI_API_KEY": "sk-test"})
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("app.agui.handle_ag_ui_request", new_callable=AsyncMock) as mock_handler,
+        ):
+            mock_handler.return_value = mock_response
+            app = create_agui_app(
+                cors_origins=["http://localhost:5173"],
+                session_factory=session_factory,
+            )
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.post(
+                    "/",
+                    json=_ENVELOPE_MISSING_DEFAULTS,
+                    headers={"Content-Type": "application/json"},
+                )
+                assert response.status_code == 200
+                mock_handler.assert_called_once()

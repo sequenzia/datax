@@ -47,6 +47,11 @@ from app.services.query_service import QueryService, is_read_only_sql
 
 logger = get_logger(__name__)
 
+# Explicit union of JSON-compatible scalar types for tool parameters.
+# Using Any generates {"items": {}} in JSON Schema, which lacks a "type"
+# key and is rejected by OpenAI's function calling API.
+JsonScalar = str | int | float | bool | None
+
 
 # ---------------------------------------------------------------------------
 # Agent dependencies
@@ -433,7 +438,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     async def render_chart(
         ctx: RunContext[AgentDeps],
         columns: list[str],
-        rows: list[list[Any]],
+        rows: list[list[JsonScalar]],
         title: str | None = None,
         chart_type_override: str | None = None,
         query_context: str | None = None,
@@ -483,7 +488,7 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
     async def render_table(
         ctx: RunContext[AgentDeps],
         columns: list[str],
-        rows: list[list[Any]],
+        rows: list[list[JsonScalar]],
     ) -> dict[str, Any]:
         """Signal to render query results as an interactive DataTable component.
 

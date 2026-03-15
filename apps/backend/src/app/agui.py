@@ -68,6 +68,33 @@ def _unwrap_envelope(body: dict[str, Any], request: Request) -> dict[str, Any]:
     return body
 
 
+_RUN_INPUT_DEFAULTS: dict[str, Any] = {
+    "state": {},
+    "tools": [],
+    "context": [],
+    "forwardedProps": {},
+}
+
+
+def _ensure_run_defaults(body: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Inject defaults for RunAgentInput fields CopilotKit v1.54 omits.
+
+    pydantic-ai 0.8.1 requires ``state``, ``tools``, ``context``, and
+    ``forwardedProps`` in ``RunAgentInput``.  CopilotKit 1.54.0 doesn't send
+    them, causing a 422.  This fills in safe empty defaults for any missing
+    fields without overwriting values that are already present.
+    """
+    applied = []
+    for key, default in _RUN_INPUT_DEFAULTS.items():
+        if key not in body:
+            body[key] = default
+            applied.append(key)
+    if applied:
+        request._json = body  # type: ignore[attr-defined]
+        logger.debug("agui_run_defaults_applied", fields=applied)
+    return body
+
+
 def _build_cors_middleware(cors_origins: list[str]) -> Middleware:
     """Build a CORS middleware instance matching the main app's policy."""
     return Middleware(
@@ -136,7 +163,8 @@ def create_agui_app(
             body = await request.json()
             if body.get("method") == "info":
                 return JSONResponse(empty_info)
-            _unwrap_envelope(body, request)
+            body = _unwrap_envelope(body, request)
+            _ensure_run_defaults(body, request)
             return JSONResponse(
                 status_code=503,
                 content={
@@ -184,7 +212,8 @@ def create_agui_app(
         body = await request.json()
         if body.get("method") == "info":
             return JSONResponse(agent_info_response)
-        _unwrap_envelope(body, request)
+        body = _unwrap_envelope(body, request)
+        _ensure_run_defaults(body, request)
         return await handle_ag_ui_request(agent, request, deps=deps)
 
     agui_app = Starlette(
