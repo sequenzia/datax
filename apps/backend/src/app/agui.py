@@ -43,6 +43,11 @@ def _build_cors_middleware(cors_origins: list[str]) -> Middleware:
     )
 
 
+async def _health_endpoint(request: Request) -> Response:
+    """Health probe for the AG-UI sub-app."""
+    return JSONResponse({"status": "ok"})
+
+
 async def _no_provider_error_handler(request: Request, exc: Exception) -> Response:
     """Return an error response when no AI provider is configured."""
     return JSONResponse(
@@ -109,7 +114,10 @@ def create_agui_app(
             )
 
         return Starlette(
-            routes=[Route("/{path:path}", _error_endpoint, methods=["GET", "POST", "OPTIONS"])],
+            routes=[
+                Route("/health", _health_endpoint, methods=["GET"]),
+                Route("/{path:path}", _error_endpoint, methods=["GET", "POST", "OPTIONS"]),
+            ],
             middleware=[cors_middleware],
         )
 
@@ -125,6 +133,7 @@ def create_agui_app(
 
     agui_app = agent.to_ag_ui(
         deps=deps,
+        routes=[Route("/health", _health_endpoint, methods=["GET"])],
         middleware=[cors_middleware],
         exception_handlers={
             NoProviderConfiguredError: _no_provider_error_handler,

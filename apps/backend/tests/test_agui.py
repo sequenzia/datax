@@ -275,3 +275,63 @@ class TestAGUINoProvider:
                 assert (
                     response.headers.get("access-control-allow-origin") == "http://localhost:5173"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Integration: Health endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestAGUIHealth:
+    """Test the /health endpoint on the AG-UI sub-app."""
+
+    @pytest.mark.asyncio
+    async def test_health_returns_ok_with_provider(self, session_factory) -> None:
+        """GET /health returns 200 + {"status": "ok"} when provider is configured."""
+        env = _test_env({"DATAX_OPENAI_API_KEY": "sk-test"})
+        with patch.dict(os.environ, env, clear=True):
+            app = create_agui_app(
+                cors_origins=["http://localhost:5173"],
+                session_factory=session_factory,
+            )
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.get("/health")
+                assert response.status_code == 200
+                assert response.json() == {"status": "ok"}
+
+    @pytest.mark.asyncio
+    async def test_health_returns_ok_without_provider(self, session_factory) -> None:
+        """GET /health returns 200 even without a provider (network reachability check)."""
+        with patch.dict(os.environ, _test_env(), clear=True):
+            app = create_agui_app(
+                cors_origins=["http://localhost:5173"],
+                session_factory=session_factory,
+            )
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.get("/health")
+                assert response.status_code == 200
+                assert response.json() == {"status": "ok"}
+
+    @pytest.mark.asyncio
+    async def test_health_cors_preflight(self, session_factory) -> None:
+        """OPTIONS /health returns CORS headers for configured origin."""
+        env = _test_env({"DATAX_OPENAI_API_KEY": "sk-test"})
+        with patch.dict(os.environ, env, clear=True):
+            app = create_agui_app(
+                cors_origins=["http://localhost:5173"],
+                session_factory=session_factory,
+            )
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.options(
+                    "/health",
+                    headers={
+                        "Origin": "http://localhost:5173",
+                        "Access-Control-Request-Method": "GET",
+                    },
+                )
+                assert (
+                    response.headers.get("access-control-allow-origin") == "http://localhost:5173"
+                )
