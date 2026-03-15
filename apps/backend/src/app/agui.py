@@ -11,6 +11,13 @@ CopilotKit v1.54+ sends ``{"method": "info"}`` to discover available agents
 before starting a conversation. The pydantic-ai AG-UI adapter doesn't handle
 this, so we intercept it before delegating to ``handle_ag_ui_request``.
 
+CopilotKit v1.54+ also wraps AG-UI payloads in a nested envelope format::
+
+    {"method": "agent/connect", "params": {...}, "body": {threadId, runId, ...}}
+
+The ``_unwrap_envelope`` helper detects this format and replaces the cached
+request JSON so that pydantic-ai sees the flat ``RunAgentInput`` fields.
+
 The agent is configured with all 9 tools (run_query, get_schema, etc.)
 and receives service references (DuckDB, QueryService) via AgentDeps.
 """
@@ -35,6 +42,30 @@ from app.services.agent_service import (
 )
 
 logger = get_logger(__name__)
+
+
+def _unwrap_envelope(body: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Unwrap CopilotKit v1.54+ AG-UI envelope if detected.
+
+    CopilotKit wraps payloads as ``{method, params, body: {threadId, ...}}``.
+    ``RunAgentInput`` fields live inside ``body``.  When detected, replace the
+    cached request JSON so pydantic-ai sees the flat format it expects.
+    """
+    if (
+        "body" in body
+        and isinstance(body["body"], dict)
+        and "threadId" not in body
+        and "thread_id" not in body
+    ):
+        inner = body["body"]
+        request._json = inner  # type: ignore[attr-defined]
+        logger.debug(
+            "agui_envelope_unwrapped",
+            method=body.get("method"),
+            thread_id=inner.get("threadId"),
+        )
+        return inner
+    return body
 
 
 def _build_cors_middleware(cors_origins: list[str]) -> Middleware:
@@ -105,6 +136,7 @@ def create_agui_app(
             body = await request.json()
             if body.get("method") == "info":
                 return JSONResponse(empty_info)
+            _unwrap_envelope(body, request)
             return JSONResponse(
                 status_code=503,
                 content={
@@ -152,6 +184,7 @@ def create_agui_app(
         body = await request.json()
         if body.get("method") == "info":
             return JSONResponse(agent_info_response)
+        _unwrap_envelope(body, request)
         return await handle_ag_ui_request(agent, request, deps=deps)
 
     agui_app = Starlette(

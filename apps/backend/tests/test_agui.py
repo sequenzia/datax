@@ -4,6 +4,7 @@ Covers:
 - Unit: AG-UI ASSI app mounts correctly in create_app()
 - Integration: AG-UI endpoint responds to handshake via httpx AsyncClient
 - Integration: Error response when no provider configured
+- Integration: CopilotKit envelope unwrapping (422 fix)
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -19,7 +21,9 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
-from app.agui import create_agui_app
+from starlette.responses import Response
+
+from app.agui import _unwrap_envelope, create_agui_app
 from app.config import Settings
 from app.models.base import Base
 
@@ -379,3 +383,163 @@ class TestAGUIHealth:
                 assert (
                     response.headers.get("access-control-allow-origin") == "http://localhost:5173"
                 )
+
+
+# ---------------------------------------------------------------------------
+# CopilotKit envelope unwrapping (422 fix)
+# ---------------------------------------------------------------------------
+
+# Minimal AG-UI envelope payload matching CopilotKit v1.54+ format.
+_ENVELOPE_PAYLOAD: dict[str, Any] = {
+    "method": "agent/connect",
+    "params": {"agentId": "datax-analytics"},
+    "body": {
+        "threadId": "t-1",
+        "runId": "r-1",
+        "state": {},
+        "messages": [{"id": "m1", "role": "user", "content": "hi"}],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {},
+    },
+}
+
+# Flat format — fields at the top level (no envelope).
+_FLAT_PAYLOAD: dict[str, Any] = {
+    "threadId": "t-1",
+    "runId": "r-1",
+    "state": {},
+    "messages": [{"id": "m1", "role": "user", "content": "hi"}],
+    "tools": [],
+    "context": [],
+    "forwardedProps": {},
+}
+
+
+class TestAGUIEnvelopeUnwrap:
+    """Tests for CopilotKit envelope unwrapping logic."""
+
+    # -- Unit tests for _unwrap_envelope ---------------------------------
+
+    def test_unwrap_envelope_unit(self) -> None:
+        """_unwrap_envelope extracts inner body and patches request._json."""
+
+        class FakeRequest:
+            _json: dict[str, Any] | None = None
+
+        req = FakeRequest()
+        result = _unwrap_envelope(dict(_ENVELOPE_PAYLOAD), req)  # type: ignore[arg-type]
+        assert result["threadId"] == "t-1"
+        assert req._json is result
+
+    def test_unwrap_flat_passthrough(self) -> None:
+        """_unwrap_envelope returns flat body unchanged."""
+
+        class FakeRequest:
+            _json: dict[str, Any] | None = None
+
+        req = FakeRequest()
+        original = dict(_FLAT_PAYLOAD)
+        result = _unwrap_envelope(original, req)  # type: ignore[arg-type]
+        assert result is original
+        assert req._json is None  # untouched
+
+    # -- Integration tests -----------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_envelope_format_not_422(self, session_factory) -> None:
+        """Envelope-wrapped payload does NOT return 422.
+
+        Mocks handle_ag_ui_request so we only test the unwrap layer,
+        not the full agent pipeline (which needs a real API key).
+        """
+        from unittest.mock import AsyncMock
+
+        mock_response = Response(status_code=200, content=b"ok")
+
+        env = _test_env({"DATAX_OPENAI_API_KEY": "sk-test"})
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("app.agui.handle_ag_ui_request", new_callable=AsyncMock) as mock_handler,
+        ):
+            mock_handler.return_value = mock_response
+            app = create_agui_app(
+                cors_origins=["http://localhost:5173"],
+                session_factory=session_factory,
+            )
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.post(
+                    "/",
+                    json=_ENVELOPE_PAYLOAD,
+                    headers={"Content-Type": "application/json"},
+                )
+                assert response.status_code == 200
+                # Verify handle_ag_ui_request was called (not short-circuited by 422)
+                mock_handler.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_flat_format_still_works(self, session_factory) -> None:
+        """Flat (non-envelope) payload still works — regression guard."""
+        from unittest.mock import AsyncMock
+
+        mock_response = Response(status_code=200, content=b"ok")
+
+        env = _test_env({"DATAX_OPENAI_API_KEY": "sk-test"})
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("app.agui.handle_ag_ui_request", new_callable=AsyncMock) as mock_handler,
+        ):
+            mock_handler.return_value = mock_response
+            app = create_agui_app(
+                cors_origins=["http://localhost:5173"],
+                session_factory=session_factory,
+            )
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.post(
+                    "/",
+                    json=_FLAT_PAYLOAD,
+                    headers={"Content-Type": "application/json"},
+                )
+                assert response.status_code == 200
+                mock_handler.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_info_in_envelope_still_works(self, session_factory) -> None:
+        """Info method in envelope format returns 200 with agents."""
+        env = _test_env({"DATAX_OPENAI_API_KEY": "sk-test"})
+        with patch.dict(os.environ, env, clear=True):
+            app = create_agui_app(
+                cors_origins=["http://localhost:5173"],
+                session_factory=session_factory,
+            )
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.post(
+                    "/",
+                    json={"method": "info", "params": {"agentId": "datax-analytics"}},
+                    headers={"Content-Type": "application/json"},
+                )
+                assert response.status_code == 200
+                body = response.json()
+                assert "agents" in body
+
+    @pytest.mark.asyncio
+    async def test_no_provider_envelope_returns_503(self, session_factory) -> None:
+        """No-provider path returns 503 (not 422) for envelope format."""
+        with patch.dict(os.environ, _test_env(), clear=True):
+            app = create_agui_app(
+                cors_origins=["http://localhost:5173"],
+                session_factory=session_factory,
+            )
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.post(
+                    "/",
+                    json=_ENVELOPE_PAYLOAD,
+                    headers={"Content-Type": "application/json"},
+                )
+                assert response.status_code == 503
+                body = response.json()
+                assert body["error"]["code"] == "NO_PROVIDER_CONFIGURED"
