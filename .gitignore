@@ -30,3 +30,4 @@ dist/
 
 site/
 data/datax.duckdb
+data/datax.duckdb.wal
