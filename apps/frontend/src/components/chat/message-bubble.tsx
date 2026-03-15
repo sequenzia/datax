@@ -53,12 +53,14 @@ export function MessageBubble({
           !isUser && "overflow-x-auto",
         )}
       >
-        {children ??
-          (isUser ? (
-            <p className="whitespace-pre-wrap break-words">{content}</p>
-          ) : (
-            <MarkdownContent content={content} />
-          ))}
+        {isUser ? (
+          <p className="whitespace-pre-wrap break-words">{content}</p>
+        ) : (
+          <>
+            {content && <MarkdownContent content={content} />}
+            {children}
+          </>
+        )}
 
         {/* Inline result blocks for assistant messages */}
         {!isUser && metadata && (

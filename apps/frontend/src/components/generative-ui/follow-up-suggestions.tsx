@@ -12,7 +12,6 @@
 
 import { Lightbulb } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useChatStore } from "@/stores/chat-store";
 
 /* -------------------------------------------------------------------------- */
 /*  Types                                                                      */
@@ -28,6 +27,8 @@ export interface FollowUpSuggestion {
 export interface FollowUpSuggestionsProps {
   /** Array of 2-3 follow-up suggestions */
   suggestions: FollowUpSuggestion[];
+  /** Callback to send a follow-up question to the AI */
+  onSend?: (question: string) => void;
   /** Additional CSS classes */
   className?: string;
 }
@@ -38,6 +39,7 @@ export interface FollowUpSuggestionsProps {
 
 export function FollowUpSuggestions({
   suggestions,
+  onSend,
   className,
 }: FollowUpSuggestionsProps) {
   if (!suggestions || suggestions.length === 0) {
@@ -45,7 +47,7 @@ export function FollowUpSuggestions({
   }
 
   const handleChipClick = (question: string) => {
-    void useChatStore.getState().sendMessage(question);
+    onSend?.(question);
   };
 
   return (

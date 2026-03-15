@@ -1,6 +1,7 @@
 /** Register CopilotKit actions for generative UI rendering in chat. */
 
-import { useCopilotAction } from "@copilotkit/react-core";
+import { useCallback } from "react";
+import { useCopilotAction, useCopilotChatInternal } from "@copilotkit/react-core";
 import { DataProfile, DataTable, InteractiveChart, SQLApproval, DataExplorer, FollowUpSuggestions } from "@/components/generative-ui";
 import type { DataTableColumn, PlotlyChartConfig, FollowUpSuggestion } from "@/components/generative-ui";
 import { BookmarkCard } from "@/components/generative-ui/bookmark-card";
@@ -289,6 +290,19 @@ export function useCopilotExploreAction() {
  * chip sends it as a new message to the AI.
  */
 export function useCopilotFollowupsAction() {
+  const { sendMessage } = useCopilotChatInternal();
+
+  const handleFollowUpSend = useCallback(
+    (question: string) => {
+      void sendMessage({
+        id: crypto.randomUUID(),
+        role: "user" as const,
+        content: question,
+      });
+    },
+    [sendMessage],
+  );
+
   useCopilotAction({
     name: "suggestFollowups",
     description:
@@ -306,7 +320,12 @@ export function useCopilotFollowupsAction() {
     render: ({ args }) => {
       const suggestions = args.suggestions as FollowUpSuggestion[] | undefined;
       if (!suggestions || suggestions.length === 0) return null;
-      return <FollowUpSuggestions suggestions={suggestions} />;
+      return (
+        <FollowUpSuggestions
+          suggestions={suggestions}
+          onSend={handleFollowUpSend}
+        />
+      );
     },
   });
 }

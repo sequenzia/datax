@@ -4,6 +4,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ChatPage } from "../chat";
 import { ThemeProvider } from "@/providers/theme-provider";
 
+vi.mock("@copilotkit/react-core", () => ({
+  useCopilotChatInternal: () => ({
+    messages: [],
+    sendMessage: vi.fn(),
+    isLoading: false,
+    stopGeneration: vi.fn(),
+  }),
+}));
+
 vi.mock("@/hooks/use-ai-status", () => ({
   useAiStatus: () => ({
     connectionStatus: "connected",

@@ -3,16 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { FollowUpSuggestions, type FollowUpSuggestion } from "../follow-up-suggestions";
 
-// Mock the chat store's sendMessage
-const mockSendMessage = vi.fn().mockResolvedValue(undefined);
-
-vi.mock("@/stores/chat-store", () => ({
-  useChatStore: {
-    getState: () => ({
-      sendMessage: mockSendMessage,
-    }),
-  },
-}));
+const mockSendMessage = vi.fn();
 
 /* ========================================================================== */
 /*  Test data                                                                  */
@@ -117,7 +108,7 @@ describe("FollowUpSuggestions", () => {
   describe("clicking chip fires message send", () => {
     it("sends the suggestion question as a message when clicked", async () => {
       const user = userEvent.setup();
-      render(<FollowUpSuggestions suggestions={mockSuggestions} />);
+      render(<FollowUpSuggestions suggestions={mockSuggestions} onSend={mockSendMessage} />);
 
       await user.click(screen.getByTestId("suggestion-chip-0"));
 
@@ -129,7 +120,7 @@ describe("FollowUpSuggestions", () => {
 
     it("sends the correct question for each chip", async () => {
       const user = userEvent.setup();
-      render(<FollowUpSuggestions suggestions={mockSuggestions} />);
+      render(<FollowUpSuggestions suggestions={mockSuggestions} onSend={mockSendMessage} />);
 
       await user.click(screen.getByTestId("suggestion-chip-1"));
 
@@ -140,7 +131,7 @@ describe("FollowUpSuggestions", () => {
 
     it("sends different question when second chip is clicked", async () => {
       const user = userEvent.setup();
-      render(<FollowUpSuggestions suggestions={mockSuggestions} />);
+      render(<FollowUpSuggestions suggestions={mockSuggestions} onSend={mockSendMessage} />);
 
       await user.click(screen.getByTestId("suggestion-chip-2"));
 

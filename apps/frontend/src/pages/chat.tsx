@@ -1,6 +1,7 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useMemo } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { MessageSquare, AlertCircle, Loader2 } from "lucide-react";
+import { useCopilotChatInternal } from "@copilotkit/react-core";
 import { Button } from "@/components/ui/button";
 import { ChatInput } from "@/components/chat/chat-input";
 import { MessageBubble } from "@/components/chat/message-bubble";
@@ -23,9 +24,26 @@ export function ChatPage() {
     pendingMessage,
   } = useChatStore();
 
+  const {
+    messages: copilotMessages,
+    sendMessage,
+    isLoading: copilotIsLoading,
+    stopGeneration,
+  } = useCopilotChatInternal();
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isUserNearBottom = useRef(true);
+
+  const isLoading = status === "loading" || copilotIsLoading;
+
+  // Use CopilotKit messages (with generativeUI) when available, fall back to Zustand messages (history)
+  const displayMessages = useMemo(() => {
+    const filtered = copilotMessages.filter(
+      (m) => m.role === "user" || m.role === "assistant",
+    );
+    return filtered.length > 0 ? filtered : messages;
+  }, [copilotMessages, messages]);
 
   // Restore persisted conversation on first mount
   useEffect(() => {
@@ -48,7 +66,7 @@ export function ChatPage() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages.length, scrollToBottom]);
+  }, [displayMessages.length, scrollToBottom]);
 
   const handleScroll = useCallback(() => {
     const container = scrollContainerRef.current;
@@ -57,22 +75,26 @@ export function ChatPage() {
     isUserNearBottom.current = scrollHeight - scrollTop - clientHeight < 100;
   }, []);
 
-  const handleSend = useCallback(async () => {
-    // Clear any pending message after the user sends
+  const handleSend = useCallback(async (text: string) => {
     useChatStore.getState().setPendingMessage(null);
 
-    // Auto-create conversation if needed, then navigate to it
     if (!conversationId) {
       const newId = await useChatStore.getState().newConversation();
       if (newId) {
         navigate(`/chat/${newId}`, { replace: true });
+      } else {
+        return;
       }
     }
-  }, [conversationId, navigate]);
+
+    await sendMessage({
+      id: crypto.randomUUID(),
+      role: "user" as const,
+      content: text,
+    });
+  }, [conversationId, navigate, sendMessage]);
 
   const { chatDisabled: aiUnavailable, chatDisabledMessage } = useAiStatus();
-
-  const isLoading = status === "loading";
 
   return (
     <div
@@ -87,7 +109,7 @@ export function ChatPage() {
         data-testid="message-list"
       >
         {/* Empty state */}
-        {messages.length === 0 && !isLoading && (
+        {displayMessages.length === 0 && !isLoading && (
           <div className="flex h-full flex-col items-center justify-center gap-4 p-6">
             <div className="rounded-full bg-muted p-4">
               <MessageSquare className="size-8 text-muted-foreground" />
@@ -112,14 +134,32 @@ export function ChatPage() {
 
         {/* Messages */}
         <div className="mx-auto max-w-3xl space-y-4 p-4">
-          {messages.map((message) => (
-            <MessageBubble
-              key={message.id}
-              role={message.role}
-              content={message.content}
-              metadata={message.metadata}
-            />
-          ))}
+          {displayMessages.map((message) => {
+            const content =
+              typeof message.content === "string"
+                ? message.content
+                : "";
+            const role = message.role as "user" | "assistant";
+            const metadata = "metadata" in message
+              ? (message.metadata as Record<string, unknown> | null)
+              : null;
+            const generativeUI =
+              "generativeUI" in message &&
+              typeof message.generativeUI === "function"
+                ? message.generativeUI
+                : null;
+
+            return (
+              <MessageBubble
+                key={message.id}
+                role={role}
+                content={content}
+                metadata={metadata}
+              >
+                {generativeUI ? generativeUI() : undefined}
+              </MessageBubble>
+            );
+          })}
 
           <div ref={messagesEndRef} />
         </div>
