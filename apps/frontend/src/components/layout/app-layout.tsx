@@ -22,11 +22,13 @@ export function AppLayout() {
       <Sidebar />
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <AiStatusBanner />
-        <ErrorBoundary>
-          <Suspense fallback={<PageLoader />}>
-            <Outlet />
-          </Suspense>
-        </ErrorBoundary>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <ErrorBoundary>
+            <Suspense fallback={<PageLoader />}>
+              <Outlet />
+            </Suspense>
+          </ErrorBoundary>
+        </div>
       </main>
       <OnboardingWizard />
     </div>

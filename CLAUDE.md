@@ -110,6 +110,10 @@ docker compose up -d             # Detached mode
 
 ## Implementation Patterns
 
+### Debugging
+- **Frontend debugging**: Use `chrome-dev-tools` MCP tools to debug the running web app — take screenshots to verify UI changes, check console for errors (`list_console_messages`), inspect network requests (`list_network_requests`), evaluate JS in the page (`evaluate_script`), and run Lighthouse audits for performance/accessibility. Prefer this over guessing at UI issues from code alone.
+- **Visual verification**: After making frontend changes, use `take_screenshot` to confirm the result looks correct before reporting completion.
+
 ### Backend
 - **App factory**: `create_app(settings=None)` in `apps/backend/src/app/main.py` — no module-level app instance; use `uv run uvicorn app.main:create_app --factory`
 - **App state**: DuckDB manager, DB engine, session factory, connection manager, settings all attached to `app.state`
