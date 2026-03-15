@@ -72,10 +72,13 @@ vi.mock("@/components/sql-editor/code-editor", () => ({
   ),
 }));
 
-// Mock TanStack Query hooks
-vi.mock("@/hooks/use-dashboard-data", () => ({
-  useDatasets: () => ({ data: [], isLoading: false }),
-  useConnections: () => ({ data: [], isLoading: false }),
+// Mock TanStack Query hooks for datasets and connections
+vi.mock("@/hooks/use-datasets", () => ({
+  useDatasetList: () => ({ data: [], isLoading: false }),
+}));
+
+vi.mock("@/hooks/use-connections", () => ({
+  useConnectionList: () => ({ data: [], isLoading: false }),
 }));
 
 vi.mock("@/hooks/use-queries", () => ({

@@ -5,7 +5,18 @@ import { DashboardPage } from "../dashboard";
 import { ThemeProvider } from "@/providers/theme-provider";
 
 vi.mock("@/hooks/use-dashboard-data", () => ({
-  useDatasets: () => ({
+  useConversations: () => ({
+    data: [
+      { id: "1", title: "Revenue Analysis", message_count: 5, created_at: "2024-01-01T00:00:00Z", updated_at: "2024-01-01T00:00:00Z" },
+    ],
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  }),
+}));
+
+vi.mock("@/hooks/use-datasets", () => ({
+  useDatasetList: () => ({
     data: [
       { id: "1", name: "Sales Data", file_format: "csv", file_size_bytes: 1024, row_count: 100, status: "ready", created_at: "2024-01-01T00:00:00Z", updated_at: "2024-01-01T00:00:00Z" },
     ],
@@ -13,17 +24,12 @@ vi.mock("@/hooks/use-dashboard-data", () => ({
     isError: false,
     refetch: vi.fn(),
   }),
-  useConnections: () => ({
+}));
+
+vi.mock("@/hooks/use-connections", () => ({
+  useConnectionList: () => ({
     data: [
       { id: "1", name: "Prod DB", db_type: "postgresql", host: "localhost", port: 5432, database_name: "mydb", status: "connected", last_tested_at: null, created_at: "2024-01-01T00:00:00Z", updated_at: "2024-01-01T00:00:00Z" },
-    ],
-    isLoading: false,
-    isError: false,
-    refetch: vi.fn(),
-  }),
-  useConversations: () => ({
-    data: [
-      { id: "1", title: "Revenue Analysis", message_count: 5, created_at: "2024-01-01T00:00:00Z", updated_at: "2024-01-01T00:00:00Z" },
     ],
     isLoading: false,
     isError: false,

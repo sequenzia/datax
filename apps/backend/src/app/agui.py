@@ -7,6 +7,10 @@ FastAPI application so that CopilotKit can communicate with the agent.
 CORS middleware is applied directly to the AG-UI sub-application because
 FastAPI's CORS middleware does not propagate to mounted sub-apps.
 
+CopilotKit v1.54+ sends ``{"method": "info"}`` to discover available agents
+before starting a conversation. The pydantic-ai AG-UI adapter doesn't handle
+this, so we intercept it before delegating to ``handle_ag_ui_request``.
+
 The agent is configured with all 9 tools (run_query, get_schema, etc.)
 and receives service references (DuckDB, QueryService) via AgentDeps.
 """
@@ -15,6 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from pydantic_ai.ag_ui import handle_ag_ui_request
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
@@ -46,19 +51,6 @@ def _build_cors_middleware(cors_origins: list[str]) -> Middleware:
 async def _health_endpoint(request: Request) -> Response:
     """Health probe for the AG-UI sub-app."""
     return JSONResponse({"status": "ok"})
-
-
-async def _no_provider_error_handler(request: Request, exc: Exception) -> Response:
-    """Return an error response when no AI provider is configured."""
-    return JSONResponse(
-        status_code=503,
-        content={
-            "error": {
-                "code": "NO_PROVIDER_CONFIGURED",
-                "message": "Configure AI provider in Settings",
-            }
-        },
-    )
 
 
 def create_agui_app(
@@ -102,7 +94,17 @@ def create_agui_app(
             message="No AI provider configured; AG-UI endpoint will return errors",
         )
 
+        # Even without a provider, info requests should succeed so CopilotKit
+        # can discover the agent and show an appropriate message.
+        empty_info = {"agents": {}}
+
+        async def _info_endpoint_no_provider(request: Request) -> Response:
+            return JSONResponse(empty_info)
+
         async def _error_endpoint(request: Request) -> Response:
+            body = await request.json()
+            if body.get("method") == "info":
+                return JSONResponse(empty_info)
             return JSONResponse(
                 status_code=503,
                 content={
@@ -116,7 +118,8 @@ def create_agui_app(
         return Starlette(
             routes=[
                 Route("/health", _health_endpoint, methods=["GET"]),
-                Route("/{path:path}", _error_endpoint, methods=["GET", "POST", "OPTIONS"]),
+                Route("/info", _info_endpoint_no_provider, methods=["GET"]),
+                Route("/", _error_endpoint, methods=["POST"]),
             ],
             middleware=[cors_middleware],
         )
@@ -131,14 +134,34 @@ def create_agui_app(
         max_retries=max_retries,
     )
 
-    agui_app = agent.to_ag_ui(
-        deps=deps,
-        routes=[Route("/health", _health_endpoint, methods=["GET"])],
+    agent_name = agent.name or "datax-analytics"
+    agent_info_response = {
+        "agents": {
+            agent_name: {
+                "description": "AI-powered data analytics assistant",
+            }
+        }
+    }
+
+    async def _info_endpoint(request: Request) -> Response:
+        """Return agent info for CopilotKit discovery (GET /info)."""
+        return JSONResponse(agent_info_response)
+
+    async def _agent_endpoint(request: Request) -> Response:
+        """Handle AG-UI POST requests, intercepting ``info`` before pydantic-ai."""
+        body = await request.json()
+        if body.get("method") == "info":
+            return JSONResponse(agent_info_response)
+        return await handle_ag_ui_request(agent, request, deps=deps)
+
+    agui_app = Starlette(
+        routes=[
+            Route("/health", _health_endpoint, methods=["GET"]),
+            Route("/info", _info_endpoint, methods=["GET"]),
+            Route("/", _agent_endpoint, methods=["POST"]),
+        ],
         middleware=[cors_middleware],
-        exception_handlers={
-            NoProviderConfiguredError: _no_provider_error_handler,
-        },
     )
 
-    logger.info("agui_app_created", agent_name=agent.name, tools_registered=9)
+    logger.info("agui_app_created", agent_name=agent_name, tools_registered=9)
     return agui_app

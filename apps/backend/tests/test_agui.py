@@ -110,14 +110,14 @@ class TestAGUIMount:
         assert "from app.agui import create_agui_app" in source
 
     def test_agui_app_type_with_provider(self, session_factory) -> None:
-        """AG-UI app is an AGUIApp when a provider is configured."""
+        """AG-UI app is a Starlette instance when a provider is configured."""
         env = _test_env({"DATAX_OPENAI_API_KEY": "sk-test"})
         with patch.dict(os.environ, env, clear=True):
             app = create_agui_app(
                 cors_origins=["http://localhost:5173"],
                 session_factory=session_factory,
             )
-            assert type(app).__name__ == "AGUIApp"
+            assert type(app).__name__ == "Starlette"
 
     def test_agui_app_type_without_provider(self, session_factory) -> None:
         """AG-UI app is a Starlette error app when no provider is configured."""
@@ -186,6 +186,44 @@ class TestAGUIHandshake:
                 )
 
     @pytest.mark.asyncio
+    async def test_agui_info_method(self, session_factory) -> None:
+        """AG-UI endpoint returns agent info for POST with method=info."""
+        env = _test_env({"DATAX_OPENAI_API_KEY": "sk-test"})
+        with patch.dict(os.environ, env, clear=True):
+            app = create_agui_app(
+                cors_origins=["http://localhost:5173"],
+                session_factory=session_factory,
+            )
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.post(
+                    "/",
+                    json={"method": "info"},
+                    headers={"Content-Type": "application/json"},
+                )
+                assert response.status_code == 200
+                body = response.json()
+                assert "agents" in body
+                assert len(body["agents"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_agui_get_info(self, session_factory) -> None:
+        """GET /info returns agent discovery info."""
+        env = _test_env({"DATAX_OPENAI_API_KEY": "sk-test"})
+        with patch.dict(os.environ, env, clear=True):
+            app = create_agui_app(
+                cors_origins=["http://localhost:5173"],
+                session_factory=session_factory,
+            )
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.get("/info")
+                assert response.status_code == 200
+                body = response.json()
+                assert "agents" in body
+                assert len(body["agents"]) == 1
+
+    @pytest.mark.asyncio
     async def test_agui_cors_blocks_unconfigured_origin(self, session_factory) -> None:
         """AG-UI endpoint CORS blocks unconfigured origins."""
         env = _test_env({"DATAX_OPENAI_API_KEY": "sk-test"})
@@ -237,8 +275,8 @@ class TestAGUINoProvider:
                 assert "Configure AI provider in Settings" in body["error"]["message"]
 
     @pytest.mark.asyncio
-    async def test_no_provider_error_on_any_path(self, session_factory) -> None:
-        """No-provider error app returns 503 on any path."""
+    async def test_no_provider_info_returns_empty_agents(self, session_factory) -> None:
+        """No-provider app returns empty agents for info requests."""
         with patch.dict(os.environ, _test_env(), clear=True):
             app = create_agui_app(
                 cors_origins=["http://localhost:5173"],
@@ -246,14 +284,20 @@ class TestAGUINoProvider:
             )
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+                # POST with method=info
                 response = await client.post(
-                    "/some/arbitrary/path",
-                    json={},
+                    "/",
+                    json={"method": "info"},
                     headers={"Content-Type": "application/json"},
                 )
-                assert response.status_code == 503
+                assert response.status_code == 200
                 body = response.json()
-                assert body["error"]["code"] == "NO_PROVIDER_CONFIGURED"
+                assert body == {"agents": {}}
+
+                # GET /info
+                response = await client.get("/info")
+                assert response.status_code == 200
+                assert response.json() == {"agents": {}}
 
     @pytest.mark.asyncio
     async def test_no_provider_cors_still_works(self, session_factory) -> None:

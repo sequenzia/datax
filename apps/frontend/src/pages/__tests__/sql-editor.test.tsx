@@ -67,9 +67,9 @@ const mockExplainMutate = vi.fn();
 const mockSaveMutate = vi.fn();
 const mockDeleteSavedMutate = vi.fn();
 
-// Mock TanStack Query hooks
-vi.mock("@/hooks/use-dashboard-data", () => ({
-  useDatasets: () => ({
+// Mock TanStack Query hooks for datasets and connections
+vi.mock("@/hooks/use-datasets", () => ({
+  useDatasetList: () => ({
     data: [
       {
         id: "ds-1",
@@ -94,7 +94,10 @@ vi.mock("@/hooks/use-dashboard-data", () => ({
     ],
     isLoading: false,
   }),
-  useConnections: () => ({
+}));
+
+vi.mock("@/hooks/use-connections", () => ({
+  useConnectionList: () => ({
     data: [
       {
         id: "conn-1",

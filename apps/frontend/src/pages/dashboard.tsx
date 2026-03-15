@@ -10,11 +10,9 @@ import {
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import {
-  useDatasets,
-  useConnections,
-  useConversations,
-} from "@/hooks/use-dashboard-data";
+import { useConversations } from "@/hooks/use-dashboard-data";
+import { useDatasetList } from "@/hooks/use-datasets";
+import { useConnectionList } from "@/hooks/use-connections";
 import { useChatStore } from "@/stores/chat-store";
 import type { Conversation } from "@/types/api";
 
@@ -156,8 +154,8 @@ function RecentConversations() {
 }
 
 function DataSourcesSummary() {
-  const { data: datasets } = useDatasets();
-  const { data: connections } = useConnections();
+  const { data: datasets } = useDatasetList();
+  const { data: connections } = useConnectionList();
 
   const datasetCount = datasets?.length ?? 0;
   const connectionCount = connections?.length ?? 0;

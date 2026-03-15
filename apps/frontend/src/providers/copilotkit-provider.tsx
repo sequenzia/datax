@@ -3,6 +3,7 @@ import { Component, type ErrorInfo, type ReactNode } from "react";
 import { CopilotActionsRegistrar } from "./copilot-actions-registrar";
 
 const RUNTIME_URL = "/api/agent";
+const AGENT_NAME = "datax-analytics";
 
 /** Silent error boundary — logs failures without breaking visible UI. */
 class ActionsErrorBoundary extends Component<
@@ -26,7 +27,7 @@ class ActionsErrorBoundary extends Component<
 
 export function CopilotKitProvider({ children }: { children: ReactNode }) {
   return (
-    <CopilotKit runtimeUrl={RUNTIME_URL}>
+    <CopilotKit runtimeUrl={RUNTIME_URL} agent={AGENT_NAME}>
       <ActionsErrorBoundary>
         <CopilotActionsRegistrar />
       </ActionsErrorBoundary>

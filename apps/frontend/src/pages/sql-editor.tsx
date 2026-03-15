@@ -23,7 +23,8 @@ import { useChatStore } from "@/stores/chat-store";
 import { useResultsStore } from "@/stores/results-store";
 import type { QueryResult } from "@/stores/results-store";
 import { useTheme } from "@/hooks/use-theme";
-import { useDatasets, useConnections } from "@/hooks/use-dashboard-data";
+import { useDatasetList } from "@/hooks/use-datasets";
+import { useConnectionList } from "@/hooks/use-connections";
 import {
   useExecuteQuery,
   useExplainQuery,
@@ -341,8 +342,8 @@ export function SqlEditorPage() {
   const saveMutation = useSaveQuery();
   const deleteSavedMutation = useDeleteSavedQuery();
 
-  const { data: datasets } = useDatasets();
-  const { data: connections } = useConnections();
+  const { data: datasets } = useDatasetList();
+  const { data: connections } = useConnectionList();
 
   // Schema-aware autocomplete
   const { tables: schemaTables } = useSchemaCompletions(selectedSource);
