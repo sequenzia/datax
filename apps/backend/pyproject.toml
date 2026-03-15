@@ -9,6 +9,7 @@ dependencies = [
     "pydantic>=2,<3",
     "pydantic-settings>=2,<3",
     "pydantic-ai>=0.1,<1",
+    "pydantic-ai-slim[ag-ui]>=0.1,<1",
     "sqlalchemy>=2.0,<3",
     "alembic>=1.14,<2",
     "duckdb>=1.2,<2",

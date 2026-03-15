@@ -403,8 +403,13 @@ class TestAgentIntegration:
         with patch.dict(os.environ, env, clear=True):
             agent = create_agent()
 
-            # Override the model with TestModel for testing
-            test_model = TestModel(custom_output_text="Here are the top 10 users by order count.")
+            # Override the model with TestModel for testing.
+            # call_tools=[] prevents TestModel from trying to invoke
+            # registered tools with dummy args.
+            test_model = TestModel(
+                custom_output_text="Here are the top 10 users by order count.",
+                call_tools=[],
+            )
 
             result = await agent.run(
                 "Show me the top 10 users by order count",
@@ -425,7 +430,10 @@ class TestAgentIntegration:
         env = _test_env({"DATAX_OPENAI_API_KEY": "sk-test"})
         with patch.dict(os.environ, env, clear=True):
             agent = create_agent()
-            test_model = TestModel(custom_output_text="I need more context about your data.")
+            test_model = TestModel(
+                custom_output_text="I need more context about your data.",
+                call_tools=[],
+            )
 
             result = await agent.run(
                 "What data do I have?",

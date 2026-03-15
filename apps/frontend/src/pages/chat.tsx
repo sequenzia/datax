@@ -4,8 +4,8 @@ import { MessageSquare, AlertCircle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ChatInput } from "@/components/chat/chat-input";
 import { MessageBubble } from "@/components/chat/message-bubble";
-import { StreamingText } from "@/components/chat/streaming-text";
 import { useChatStore } from "@/stores/chat-store";
+import { useAiStatus } from "@/hooks/use-ai-status";
 
 export function ChatPage() {
   const { conversationId: urlConversationId } = useParams<{
@@ -17,13 +17,10 @@ export function ChatPage() {
     messages,
     status,
     error,
-    streamingContent,
-    streamingMetadata,
-    sendMessage,
-    cancelStream,
     clearError,
     switchConversation,
     restoreSession,
+    pendingMessage,
   } = useChatStore();
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -42,7 +39,7 @@ export function ChatPage() {
     }
   }, [urlConversationId, conversationId, switchConversation]);
 
-  // Auto-scroll to bottom when new messages appear or during streaming
+  // Auto-scroll to bottom when new messages appear
   const scrollToBottom = useCallback(() => {
     if (isUserNearBottom.current) {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -51,7 +48,7 @@ export function ChatPage() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages.length, streamingContent, scrollToBottom]);
+  }, [messages.length, scrollToBottom]);
 
   const handleScroll = useCallback(() => {
     const container = scrollContainerRef.current;
@@ -60,26 +57,21 @@ export function ChatPage() {
     isUserNearBottom.current = scrollHeight - scrollTop - clientHeight < 100;
   }, []);
 
-  const handleSend = useCallback(
-    async (content: string) => {
-      // Auto-create conversation if needed, then navigate to it
-      if (!conversationId) {
-        const newId = await useChatStore.getState().newConversation();
-        if (newId) {
-          navigate(`/chat/${newId}`, { replace: true });
-          // Wait for state update, then send
-          setTimeout(() => {
-            void useChatStore.getState().sendMessage(content);
-          }, 0);
-        }
-        return;
-      }
-      void sendMessage(content);
-    },
-    [conversationId, sendMessage, navigate],
-  );
+  const handleSend = useCallback(async () => {
+    // Clear any pending message after the user sends
+    useChatStore.getState().setPendingMessage(null);
 
-  const isStreaming = status === "streaming";
+    // Auto-create conversation if needed, then navigate to it
+    if (!conversationId) {
+      const newId = await useChatStore.getState().newConversation();
+      if (newId) {
+        navigate(`/chat/${newId}`, { replace: true });
+      }
+    }
+  }, [conversationId, navigate]);
+
+  const { chatDisabled: aiUnavailable, chatDisabledMessage } = useAiStatus();
+
   const isLoading = status === "loading";
 
   return (
@@ -95,7 +87,7 @@ export function ChatPage() {
         data-testid="message-list"
       >
         {/* Empty state */}
-        {messages.length === 0 && !isStreaming && !isLoading && (
+        {messages.length === 0 && !isLoading && (
           <div className="flex h-full flex-col items-center justify-center gap-4 p-6">
             <div className="rounded-full bg-muted p-4">
               <MessageSquare className="size-8 text-muted-foreground" />
@@ -129,18 +121,6 @@ export function ChatPage() {
             />
           ))}
 
-          {/* Streaming assistant response */}
-          {isStreaming && (
-            <MessageBubble
-              role="assistant"
-              content=""
-              isStreaming
-              streamingMetadata={streamingMetadata}
-            >
-              <StreamingText content={streamingContent} isStreaming />
-            </MessageBubble>
-          )}
-
           <div ref={messagesEndRef} />
         </div>
       </div>
@@ -165,9 +145,9 @@ export function ChatPage() {
       <div className="mx-auto w-full max-w-3xl">
         <ChatInput
           onSend={handleSend}
-          onCancel={cancelStream}
-          isStreaming={isStreaming}
-          disabled={isLoading}
+          disabled={isLoading || aiUnavailable}
+          disabledMessage={chatDisabledMessage}
+          initialValue={pendingMessage}
         />
       </div>
     </div>

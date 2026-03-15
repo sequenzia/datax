@@ -1,4 +1,4 @@
-"""Tests for SQLAlchemy ORM models.
+"""Tests for SQLAlchemy ORM models (v2 schema).
 
 Unit tests verify model instantiation, field types, constraints, and relationships.
 Integration tests use an in-memory SQLite database to verify table creation and
@@ -14,12 +14,15 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     Base,
+    Bookmark,
     Connection,
     Conversation,
+    Dashboard,
+    DashboardItem,
+    DataProfile,
     Dataset,
     Message,
     ProviderConfig,
-    SavedQuery,
     SchemaMetadata,
 )
 
@@ -56,12 +59,10 @@ class TestDatasetModel:
             name="sales.csv",
             file_path="/data/uploads/sales.csv",
             file_format="csv",
-            file_size_bytes=1024,
             duckdb_table_name="ds_sales",
         )
         assert dataset.name == "sales.csv"
         assert dataset.file_format == "csv"
-        assert dataset.file_size_bytes == 1024
 
     def test_id_column_has_default(self) -> None:
         """UUID primary key column has a callable default for auto-generation."""
@@ -74,7 +75,6 @@ class TestDatasetModel:
             name="test",
             file_path="/tmp/test.csv",
             file_format="csv",
-            file_size_bytes=100,
             duckdb_table_name="ds_test",
             user_id=None,
         )
@@ -85,10 +85,29 @@ class TestDatasetModel:
             name="test",
             file_path="/tmp/test.csv",
             file_format="csv",
-            file_size_bytes=100,
             duckdb_table_name="ds_test",
         )
         assert dataset.row_count is None
+
+    def test_data_stats_nullable(self) -> None:
+        dataset = Dataset(
+            name="test",
+            file_path="/tmp/test.csv",
+            file_format="csv",
+            duckdb_table_name="ds_test",
+        )
+        assert dataset.data_stats is None
+
+    def test_data_stats_accepts_dict(self) -> None:
+        stats = {"row_count": 1000, "column_count": 5, "sample": [1, 2, 3]}
+        dataset = Dataset(
+            name="test",
+            file_path="/tmp/test.csv",
+            file_format="csv",
+            duckdb_table_name="ds_test",
+            data_stats=stats,
+        )
+        assert dataset.data_stats == stats
 
     def test_tablename(self) -> None:
         assert Dataset.__tablename__ == "datasets"
@@ -97,6 +116,9 @@ class TestDatasetModel:
         table = Dataset.__table__
         duckdb_col = table.c.duckdb_table_name
         assert duckdb_col.unique is True
+
+    def test_has_profile_relationship(self) -> None:
+        assert hasattr(Dataset, "profile")
 
 
 class TestConnectionModel:
@@ -128,18 +150,6 @@ class TestConnectionModel:
         )
         assert isinstance(conn.encrypted_password, bytes)
 
-    def test_last_tested_at_nullable(self) -> None:
-        conn = Connection(
-            name="Test",
-            db_type="postgresql",
-            host="localhost",
-            port=5432,
-            database_name="testdb",
-            username="user",
-            encrypted_password=b"enc",
-        )
-        assert conn.last_tested_at is None
-
     def test_user_id_accepts_none(self) -> None:
         conn = Connection(
             name="Test",
@@ -155,6 +165,12 @@ class TestConnectionModel:
 
     def test_tablename(self) -> None:
         assert Connection.__tablename__ == "connections"
+
+    def test_uses_created_at_mixin(self) -> None:
+        """Connection uses CreatedAtMixin (created_at only, no updated_at)."""
+        table = Connection.__table__
+        col_names = {col.name for col in table.columns}
+        assert "created_at" in col_names
 
 
 class TestSchemaMetadataModel:
@@ -180,6 +196,38 @@ class TestSchemaMetadataModel:
             data_type="INTEGER",
         )
         assert schema.foreign_key_ref is None
+        assert schema.ordinal_position is None
+
+    def test_ordinal_position_accepts_value(self) -> None:
+        schema = SchemaMetadata(
+            source_id=uuid.uuid4(),
+            source_type="dataset",
+            table_name="orders",
+            column_name="price",
+            data_type="DECIMAL",
+            ordinal_position=3,
+        )
+        assert schema.ordinal_position == 3
+
+    def test_polymorphic_dataset_source_type(self) -> None:
+        schema = SchemaMetadata(
+            source_id=uuid.uuid4(),
+            source_type="dataset",
+            table_name="t",
+            column_name="c",
+            data_type="TEXT",
+        )
+        assert schema.source_type == "dataset"
+
+    def test_polymorphic_connection_source_type(self) -> None:
+        schema = SchemaMetadata(
+            source_id=uuid.uuid4(),
+            source_type="connection",
+            table_name="t",
+            column_name="c",
+            data_type="TEXT",
+        )
+        assert schema.source_type == "connection"
 
     def test_indexes_defined(self) -> None:
         table = SchemaMetadata.__table__
@@ -218,6 +266,15 @@ class TestConversationModel:
         conv = Conversation(title="Test", user_id=None)
         assert conv.user_id is None
 
+    def test_analysis_context_nullable(self) -> None:
+        conv = Conversation(title="Test")
+        assert conv.analysis_context is None
+
+    def test_analysis_context_accepts_dict(self) -> None:
+        ctx = {"datasets": ["sales"], "last_query": "SELECT 1"}
+        conv = Conversation(title="Test", analysis_context=ctx)
+        assert conv.analysis_context == ctx
+
     def test_has_messages_relationship(self) -> None:
         assert hasattr(Conversation, "messages")
 
@@ -237,27 +294,87 @@ class TestMessageModel:
         assert msg.role == "user"
         assert msg.content == "What are the total sales?"
 
-    def test_metadata_accepts_none(self) -> None:
-        msg = Message(
-            conversation_id=uuid.uuid4(),
-            role="assistant",
-            content="Here are the results.",
-            metadata_=None,
-        )
-        assert msg.metadata_ is None
-
-    def test_metadata_accepts_dict(self) -> None:
-        meta = {"sql": "SELECT * FROM sales", "chart_type": "bar"}
+    def test_sql_nullable(self) -> None:
         msg = Message(
             conversation_id=uuid.uuid4(),
             role="assistant",
             content="Results",
-            metadata_=meta,
         )
-        assert msg.metadata_ == meta
+        assert msg.sql is None
+
+    def test_sql_accepts_text(self) -> None:
+        msg = Message(
+            conversation_id=uuid.uuid4(),
+            role="assistant",
+            content="Results",
+            sql="SELECT SUM(amount) FROM sales",
+        )
+        assert msg.sql == "SELECT SUM(amount) FROM sales"
+
+    def test_chart_config_nullable(self) -> None:
+        msg = Message(
+            conversation_id=uuid.uuid4(),
+            role="assistant",
+            content="Results",
+        )
+        assert msg.chart_config is None
+
+    def test_chart_config_accepts_dict(self) -> None:
+        config = {"type": "bar", "x": "month", "y": "revenue"}
+        msg = Message(
+            conversation_id=uuid.uuid4(),
+            role="assistant",
+            content="Results",
+            chart_config=config,
+        )
+        assert msg.chart_config == config
+
+    def test_query_result_summary_nullable(self) -> None:
+        msg = Message(
+            conversation_id=uuid.uuid4(),
+            role="assistant",
+            content="Results",
+        )
+        assert msg.query_result_summary is None
+
+    def test_execution_time_ms_nullable(self) -> None:
+        msg = Message(
+            conversation_id=uuid.uuid4(),
+            role="assistant",
+            content="Results",
+        )
+        assert msg.execution_time_ms is None
+
+    def test_source_fields_nullable(self) -> None:
+        msg = Message(
+            conversation_id=uuid.uuid4(),
+            role="user",
+            content="Query",
+        )
+        assert msg.source_id is None
+        assert msg.source_type is None
+
+    def test_attempts_nullable(self) -> None:
+        msg = Message(
+            conversation_id=uuid.uuid4(),
+            role="assistant",
+            content="Results",
+        )
+        assert msg.attempts is None
+
+    def test_correction_history_nullable(self) -> None:
+        msg = Message(
+            conversation_id=uuid.uuid4(),
+            role="assistant",
+            content="Results",
+        )
+        assert msg.correction_history is None
 
     def test_has_conversation_relationship(self) -> None:
         assert hasattr(Message, "conversation")
+
+    def test_has_bookmark_relationship(self) -> None:
+        assert hasattr(Message, "bookmark")
 
     def test_foreign_key_to_conversations(self) -> None:
         table = Message.__table__
@@ -270,35 +387,161 @@ class TestMessageModel:
         assert Message.__tablename__ == "messages"
 
 
-class TestSavedQueryModel:
-    """Test SavedQuery ORM model definition."""
+class TestBookmarkModel:
+    """Test Bookmark ORM model definition."""
 
     def test_instantiate_with_required_fields(self) -> None:
-        sq = SavedQuery(
-            name="Monthly Revenue",
-            sql_content="SELECT SUM(revenue) FROM sales GROUP BY month",
+        bm = Bookmark(
+            message_id=uuid.uuid4(),
+            title="Q4 Revenue by Region",
         )
-        assert sq.name == "Monthly Revenue"
-        assert "SELECT" in sq.sql_content
+        assert bm.title == "Q4 Revenue by Region"
+
+    def test_sql_nullable(self) -> None:
+        bm = Bookmark(
+            message_id=uuid.uuid4(),
+            title="Test",
+        )
+        assert bm.sql is None
+
+    def test_chart_config_nullable(self) -> None:
+        bm = Bookmark(
+            message_id=uuid.uuid4(),
+            title="Test",
+        )
+        assert bm.chart_config is None
+
+    def test_result_snapshot_nullable(self) -> None:
+        bm = Bookmark(
+            message_id=uuid.uuid4(),
+            title="Test",
+        )
+        assert bm.result_snapshot is None
 
     def test_source_fields_nullable(self) -> None:
-        sq = SavedQuery(
-            name="Test",
-            sql_content="SELECT 1",
+        bm = Bookmark(
+            message_id=uuid.uuid4(),
+            title="Test",
         )
-        assert sq.source_id is None
-        assert sq.source_type is None
+        assert bm.source_id is None
+        assert bm.source_type is None
 
     def test_user_id_accepts_none(self) -> None:
-        sq = SavedQuery(
-            name="Test",
-            sql_content="SELECT 1",
+        bm = Bookmark(
+            message_id=uuid.uuid4(),
+            title="Test",
             user_id=None,
         )
-        assert sq.user_id is None
+        assert bm.user_id is None
+
+    def test_has_message_relationship(self) -> None:
+        assert hasattr(Bookmark, "message")
+
+    def test_has_dashboard_items_relationship(self) -> None:
+        assert hasattr(Bookmark, "dashboard_items")
+
+    def test_foreign_key_to_messages(self) -> None:
+        table = Bookmark.__table__
+        fk_targets = set()
+        for fk in table.foreign_keys:
+            fk_targets.add(fk.target_fullname)
+        assert "messages.id" in fk_targets
 
     def test_tablename(self) -> None:
-        assert SavedQuery.__tablename__ == "saved_queries"
+        assert Bookmark.__tablename__ == "bookmarks"
+
+
+class TestDashboardModel:
+    """Test Dashboard ORM model definition."""
+
+    def test_instantiate_with_required_fields(self) -> None:
+        dash = Dashboard(title="Sales Dashboard")
+        assert dash.title == "Sales Dashboard"
+
+    def test_user_id_accepts_none(self) -> None:
+        dash = Dashboard(title="Test", user_id=None)
+        assert dash.user_id is None
+
+    def test_has_items_relationship(self) -> None:
+        assert hasattr(Dashboard, "items")
+
+    def test_tablename(self) -> None:
+        assert Dashboard.__tablename__ == "dashboards"
+
+
+class TestDashboardItemModel:
+    """Test DashboardItem ORM model definition."""
+
+    def test_instantiate_with_required_fields(self) -> None:
+        item = DashboardItem(
+            dashboard_id=uuid.uuid4(),
+            bookmark_id=uuid.uuid4(),
+            position=0,
+        )
+        assert item.position == 0
+
+    def test_has_dashboard_relationship(self) -> None:
+        assert hasattr(DashboardItem, "dashboard")
+
+    def test_has_bookmark_relationship(self) -> None:
+        assert hasattr(DashboardItem, "bookmark")
+
+    def test_foreign_key_to_dashboards(self) -> None:
+        table = DashboardItem.__table__
+        fk_targets = set()
+        for fk in table.foreign_keys:
+            fk_targets.add(fk.target_fullname)
+        assert "dashboards.id" in fk_targets
+
+    def test_foreign_key_to_bookmarks(self) -> None:
+        table = DashboardItem.__table__
+        fk_targets = set()
+        for fk in table.foreign_keys:
+            fk_targets.add(fk.target_fullname)
+        assert "bookmarks.id" in fk_targets
+
+    def test_tablename(self) -> None:
+        assert DashboardItem.__tablename__ == "dashboard_items"
+
+
+class TestDataProfileModel:
+    """Test DataProfile ORM model definition."""
+
+    def test_instantiate_with_required_fields(self) -> None:
+        dp = DataProfile(
+            dataset_id=uuid.uuid4(),
+        )
+        assert dp.summarize_results is None
+        assert dp.sample_values is None
+
+    def test_summarize_results_accepts_dict(self) -> None:
+        results = {"columns": 5, "rows": 1000}
+        dp = DataProfile(
+            dataset_id=uuid.uuid4(),
+            summarize_results=results,
+        )
+        assert dp.summarize_results == results
+
+    def test_sample_values_accepts_dict(self) -> None:
+        samples = {"col1": [1, 2, 3], "col2": ["a", "b", "c"]}
+        dp = DataProfile(
+            dataset_id=uuid.uuid4(),
+            sample_values=samples,
+        )
+        assert dp.sample_values == samples
+
+    def test_foreign_key_to_datasets(self) -> None:
+        table = DataProfile.__table__
+        fk_targets = set()
+        for fk in table.foreign_keys:
+            fk_targets.add(fk.target_fullname)
+        assert "datasets.id" in fk_targets
+
+    def test_has_dataset_relationship(self) -> None:
+        assert hasattr(DataProfile, "dataset")
+
+    def test_tablename(self) -> None:
+        assert DataProfile.__tablename__ == "data_profiles"
 
 
 class TestProviderConfigModel:
@@ -338,6 +581,15 @@ class TestProviderConfigModel:
         )
         assert pc.user_id is None
 
+    def test_provider_name_unique_index(self) -> None:
+        """ProviderConfig has a unique index on (provider_name, user_id)."""
+        table = ProviderConfig.__table__
+        index_names = {idx.name for idx in table.indexes}
+        assert "idx_provider_name_user" in index_names
+        for idx in table.indexes:
+            if idx.name == "idx_provider_name_user":
+                assert idx.unique is True
+
     def test_tablename(self) -> None:
         assert ProviderConfig.__tablename__ == "provider_configs"
 
@@ -359,7 +611,10 @@ class TestTableCreation:
             "schema_metadata",
             "conversations",
             "messages",
-            "saved_queries",
+            "bookmarks",
+            "dashboards",
+            "dashboard_items",
+            "data_profiles",
             "provider_configs",
         }
         assert expected.issubset(table_names)
@@ -373,10 +628,10 @@ class TestTableCreation:
             "name",
             "file_path",
             "file_format",
-            "file_size_bytes",
-            "row_count",
             "duckdb_table_name",
             "status",
+            "row_count",
+            "data_stats",
             "created_at",
             "updated_at",
         }
@@ -395,17 +650,111 @@ class TestTableCreation:
             "database_name",
             "username",
             "encrypted_password",
-            "status",
-            "last_tested_at",
             "created_at",
-            "updated_at",
         }
         assert expected.issubset(columns)
 
     def test_message_columns(self, engine) -> None:
         inspector = inspect(engine)
         columns = {col["name"] for col in inspector.get_columns("messages")}
-        expected = {"id", "conversation_id", "role", "content", "metadata", "created_at"}
+        expected = {
+            "id",
+            "conversation_id",
+            "role",
+            "content",
+            "sql",
+            "chart_config",
+            "query_result_summary",
+            "execution_time_ms",
+            "source_id",
+            "source_type",
+            "attempts",
+            "correction_history",
+            "created_at",
+        }
+        assert expected.issubset(columns)
+
+    def test_bookmark_columns(self, engine) -> None:
+        inspector = inspect(engine)
+        columns = {col["name"] for col in inspector.get_columns("bookmarks")}
+        expected = {
+            "id",
+            "message_id",
+            "title",
+            "sql",
+            "chart_config",
+            "result_snapshot",
+            "source_id",
+            "source_type",
+            "user_id",
+            "created_at",
+        }
+        assert expected.issubset(columns)
+
+    def test_dashboard_columns(self, engine) -> None:
+        inspector = inspect(engine)
+        columns = {col["name"] for col in inspector.get_columns("dashboards")}
+        expected = {
+            "id",
+            "title",
+            "user_id",
+            "created_at",
+            "updated_at",
+        }
+        assert expected.issubset(columns)
+
+    def test_dashboard_item_columns(self, engine) -> None:
+        inspector = inspect(engine)
+        columns = {col["name"] for col in inspector.get_columns("dashboard_items")}
+        expected = {
+            "id",
+            "dashboard_id",
+            "bookmark_id",
+            "position",
+            "created_at",
+        }
+        assert expected.issubset(columns)
+
+    def test_data_profile_columns(self, engine) -> None:
+        inspector = inspect(engine)
+        columns = {col["name"] for col in inspector.get_columns("data_profiles")}
+        expected = {
+            "id",
+            "dataset_id",
+            "summarize_results",
+            "sample_values",
+            "profiled_at",
+        }
+        assert expected.issubset(columns)
+
+    def test_schema_metadata_columns(self, engine) -> None:
+        inspector = inspect(engine)
+        columns = {col["name"] for col in inspector.get_columns("schema_metadata")}
+        expected = {
+            "id",
+            "source_id",
+            "source_type",
+            "table_name",
+            "column_name",
+            "data_type",
+            "is_nullable",
+            "is_primary_key",
+            "foreign_key_ref",
+            "ordinal_position",
+        }
+        assert expected.issubset(columns)
+
+    def test_conversation_columns(self, engine) -> None:
+        inspector = inspect(engine)
+        columns = {col["name"] for col in inspector.get_columns("conversations")}
+        expected = {
+            "id",
+            "user_id",
+            "title",
+            "analysis_context",
+            "created_at",
+            "updated_at",
+        }
         assert expected.issubset(columns)
 
 
@@ -417,7 +766,6 @@ class TestDatabaseCRUD:
             name="test.csv",
             file_path="/data/test.csv",
             file_format="csv",
-            file_size_bytes=512,
             duckdb_table_name="ds_test_crud",
         )
         session.add(dataset)
@@ -426,8 +774,24 @@ class TestDatabaseCRUD:
         result = session.get(Dataset, dataset.id)
         assert result is not None
         assert result.name == "test.csv"
-        assert result.file_size_bytes == 512
         assert result.status == "uploading"
+
+    def test_create_dataset_with_data_stats(self, session) -> None:
+        stats = {"row_count": 500, "columns": ["a", "b"]}
+        dataset = Dataset(
+            name="stats.csv",
+            file_path="/data/stats.csv",
+            file_format="csv",
+            duckdb_table_name="ds_stats",
+            data_stats=stats,
+        )
+        session.add(dataset)
+        session.commit()
+
+        result = session.get(Dataset, dataset.id)
+        assert result is not None
+        assert result.data_stats is not None
+        assert result.data_stats["row_count"] == 500
 
     def test_create_and_read_connection(self, session) -> None:
         conn = Connection(
@@ -445,7 +809,6 @@ class TestDatabaseCRUD:
         result = session.get(Connection, conn.id)
         assert result is not None
         assert result.db_type == "postgresql"
-        assert result.status == "disconnected"
 
     def test_create_and_read_schema_metadata(self, session) -> None:
         source_id = uuid.uuid4()
@@ -455,6 +818,7 @@ class TestDatabaseCRUD:
             table_name="sales",
             column_name="amount",
             data_type="DECIMAL",
+            ordinal_position=1,
         )
         session.add(schema)
         session.commit()
@@ -464,6 +828,35 @@ class TestDatabaseCRUD:
         assert result.data_type == "DECIMAL"
         assert result.is_nullable is True
         assert result.is_primary_key is False
+        assert result.ordinal_position == 1
+
+    def test_schema_metadata_polymorphic_connection(self, session) -> None:
+        """SchemaMetadata works with source_type='connection'."""
+        source_id = uuid.uuid4()
+        schema = SchemaMetadata(
+            source_id=source_id,
+            source_type="connection",
+            table_name="users",
+            column_name="email",
+            data_type="VARCHAR",
+            ordinal_position=2,
+        )
+        session.add(schema)
+        session.commit()
+
+        result = session.get(SchemaMetadata, schema.id)
+        assert result is not None
+        assert result.source_type == "connection"
+
+    def test_conversation_with_analysis_context(self, session) -> None:
+        ctx = {"datasets": ["sales.csv"], "follow_up_count": 3}
+        conv = Conversation(title="Analysis session", analysis_context=ctx)
+        session.add(conv)
+        session.commit()
+
+        result = session.get(Conversation, conv.id)
+        assert result is not None
+        assert result.analysis_context["datasets"] == ["sales.csv"]
 
     def test_conversation_message_relationship(self, session) -> None:
         conv = Conversation(title="Test conversation")
@@ -479,6 +872,10 @@ class TestDatabaseCRUD:
             conversation_id=conv.id,
             role="assistant",
             content="Hi there!",
+            sql="SELECT 1",
+            chart_config={"type": "bar"},
+            execution_time_ms=45.2,
+            attempts=1,
         )
         session.add_all([msg1, msg2])
         session.commit()
@@ -508,6 +905,42 @@ class TestDatabaseCRUD:
         assert result.conversation is not None
         assert result.conversation.title == "Back-populate test"
 
+    def test_message_structured_fields(self, session) -> None:
+        """Message stores structured metadata in dedicated columns."""
+        conv = Conversation(title="Structured test")
+        session.add(conv)
+        session.flush()
+
+        msg = Message(
+            conversation_id=conv.id,
+            role="assistant",
+            content="Here are the results",
+            sql="SELECT SUM(revenue) FROM sales",
+            chart_config={"type": "bar", "x": "month", "y": "revenue"},
+            query_result_summary={"rows": 12, "columns": 2},
+            execution_time_ms=123.5,
+            source_id="dataset-uuid",
+            source_type="dataset",
+            attempts=2,
+            correction_history=[
+                {"attempt": 1, "error": "column not found"},
+                {"attempt": 2, "sql": "SELECT SUM(revenue) FROM sales"},
+            ],
+        )
+        session.add(msg)
+        session.commit()
+
+        result = session.get(Message, msg.id)
+        assert result is not None
+        assert result.sql == "SELECT SUM(revenue) FROM sales"
+        assert result.chart_config["type"] == "bar"
+        assert result.query_result_summary["rows"] == 12
+        assert result.execution_time_ms == 123.5
+        assert result.source_id == "dataset-uuid"
+        assert result.source_type == "dataset"
+        assert result.attempts == 2
+        assert len(result.correction_history) == 2
+
     def test_cascade_delete_conversation_removes_messages(self, session) -> None:
         conv = Conversation(title="Cascade test")
         session.add(conv)
@@ -527,17 +960,203 @@ class TestDatabaseCRUD:
 
         assert session.get(Message, msg_id) is None
 
-    def test_create_saved_query(self, session) -> None:
-        sq = SavedQuery(
-            name="Total Revenue",
-            sql_content="SELECT SUM(revenue) FROM sales",
+    def test_bookmark_crud(self, session) -> None:
+        """Create and read a bookmark linked to a message."""
+        conv = Conversation(title="Bookmark test")
+        session.add(conv)
+        session.flush()
+
+        msg = Message(
+            conversation_id=conv.id,
+            role="assistant",
+            content="Results",
+            sql="SELECT * FROM sales",
         )
-        session.add(sq)
+        session.add(msg)
+        session.flush()
+
+        bm = Bookmark(
+            message_id=msg.id,
+            title="Q4 Revenue",
+            sql="SELECT * FROM sales",
+            chart_config={"type": "bar"},
+            result_snapshot={"data": [1, 2, 3]},
+            source_type="dataset",
+        )
+        session.add(bm)
         session.commit()
 
-        result = session.get(SavedQuery, sq.id)
+        result = session.get(Bookmark, bm.id)
         assert result is not None
-        assert result.sql_content == "SELECT SUM(revenue) FROM sales"
+        assert result.title == "Q4 Revenue"
+        assert result.sql == "SELECT * FROM sales"
+        assert result.chart_config == {"type": "bar"}
+        assert result.result_snapshot == {"data": [1, 2, 3]}
+
+    def test_cascade_delete_message_removes_bookmark(self, session) -> None:
+        """Deleting a message cascades to delete its bookmark."""
+        conv = Conversation(title="Cascade bookmark test")
+        session.add(conv)
+        session.flush()
+
+        msg = Message(
+            conversation_id=conv.id,
+            role="assistant",
+            content="Results",
+        )
+        session.add(msg)
+        session.flush()
+
+        bm = Bookmark(
+            message_id=msg.id,
+            title="To be deleted",
+        )
+        session.add(bm)
+        session.commit()
+        bm_id = bm.id
+
+        session.delete(conv)
+        session.commit()
+
+        assert session.get(Bookmark, bm_id) is None
+
+    def test_dashboard_with_items(self, session) -> None:
+        """Create a dashboard with items linked to bookmarks."""
+        conv = Conversation(title="Dashboard test")
+        session.add(conv)
+        session.flush()
+
+        msg = Message(
+            conversation_id=conv.id,
+            role="assistant",
+            content="Results",
+        )
+        session.add(msg)
+        session.flush()
+
+        bm = Bookmark(message_id=msg.id, title="Bookmark 1")
+        session.add(bm)
+        session.flush()
+
+        dash = Dashboard(title="Sales Dashboard")
+        session.add(dash)
+        session.flush()
+
+        item = DashboardItem(
+            dashboard_id=dash.id,
+            bookmark_id=bm.id,
+            position=0,
+        )
+        session.add(item)
+        session.commit()
+
+        result = session.get(Dashboard, dash.id)
+        assert result is not None
+        assert len(result.items) == 1
+        assert result.items[0].bookmark.title == "Bookmark 1"
+
+    def test_cascade_delete_dashboard_removes_items(self, session) -> None:
+        """Deleting a dashboard cascades to delete its items."""
+        conv = Conversation(title="Dashboard cascade")
+        session.add(conv)
+        session.flush()
+
+        msg = Message(
+            conversation_id=conv.id, role="assistant", content="R"
+        )
+        session.add(msg)
+        session.flush()
+
+        bm = Bookmark(message_id=msg.id, title="BM")
+        session.add(bm)
+        session.flush()
+
+        dash = Dashboard(title="Delete me")
+        session.add(dash)
+        session.flush()
+
+        item = DashboardItem(
+            dashboard_id=dash.id, bookmark_id=bm.id, position=0
+        )
+        session.add(item)
+        session.commit()
+        item_id = item.id
+
+        session.delete(dash)
+        session.commit()
+
+        assert session.get(DashboardItem, item_id) is None
+
+    def test_data_profile_crud(self, session) -> None:
+        """Create and read a data profile linked to a dataset."""
+        dataset = Dataset(
+            name="profile_test.csv",
+            file_path="/data/profile_test.csv",
+            file_format="csv",
+            duckdb_table_name="ds_profile_test",
+        )
+        session.add(dataset)
+        session.flush()
+
+        profile = DataProfile(
+            dataset_id=dataset.id,
+            summarize_results={"columns": 5, "rows": 1000},
+            sample_values={"col1": [1, 2, 3]},
+        )
+        session.add(profile)
+        session.commit()
+
+        result = session.get(DataProfile, profile.id)
+        assert result is not None
+        assert result.summarize_results["columns"] == 5
+        assert result.sample_values["col1"] == [1, 2, 3]
+
+    def test_cascade_delete_dataset_removes_profile(self, session) -> None:
+        """Deleting a dataset cascades to delete its profile."""
+        dataset = Dataset(
+            name="cascade_profile.csv",
+            file_path="/data/cascade.csv",
+            file_format="csv",
+            duckdb_table_name="ds_cascade_profile",
+        )
+        session.add(dataset)
+        session.flush()
+
+        profile = DataProfile(
+            dataset_id=dataset.id,
+            summarize_results={"test": True},
+        )
+        session.add(profile)
+        session.commit()
+        profile_id = profile.id
+
+        session.delete(dataset)
+        session.commit()
+
+        assert session.get(DataProfile, profile_id) is None
+
+    def test_dataset_profile_relationship(self, session) -> None:
+        """Dataset.profile relationship returns the linked DataProfile."""
+        dataset = Dataset(
+            name="rel_test.csv",
+            file_path="/data/rel.csv",
+            file_format="csv",
+            duckdb_table_name="ds_rel_test",
+        )
+        session.add(dataset)
+        session.flush()
+
+        profile = DataProfile(
+            dataset_id=dataset.id,
+            summarize_results={"ok": True},
+        )
+        session.add(profile)
+        session.commit()
+
+        result = session.get(Dataset, dataset.id)
+        assert result is not None
+        assert result.profile is not None
+        assert result.profile.summarize_results == {"ok": True}
 
     def test_create_provider_config(self, session) -> None:
         pc = ProviderConfig(
@@ -560,50 +1179,21 @@ class TestDatabaseCRUD:
             name="auto-uuid",
             file_path="/tmp/auto.csv",
             file_format="csv",
-            file_size_bytes=1,
             duckdb_table_name="ds_auto_uuid",
         )
         conv = Conversation(title="auto-uuid")
-        sq = SavedQuery(name="auto-uuid", sql_content="SELECT 1")
         pc = ProviderConfig(
-            provider_name="test",
+            provider_name="test_auto",
             model_name="test",
             encrypted_api_key=b"test",
         )
 
-        session.add_all([dataset, conv, sq, pc])
+        session.add_all([dataset, conv, pc])
         session.commit()
 
         assert isinstance(dataset.id, uuid.UUID)
         assert isinstance(conv.id, uuid.UUID)
-        assert isinstance(sq.id, uuid.UUID)
         assert isinstance(pc.id, uuid.UUID)
-
-    def test_message_metadata_stores_json(self, session) -> None:
-        """JSONB metadata field stores and retrieves arbitrary JSON."""
-        conv = Conversation(title="JSON test")
-        session.add(conv)
-        session.flush()
-
-        meta = {
-            "sql": "SELECT * FROM users",
-            "chart_config": {"type": "bar", "x": "name", "y": "count"},
-            "nested": {"deep": [1, 2, 3]},
-        }
-        msg = Message(
-            conversation_id=conv.id,
-            role="assistant",
-            content="Here are the results",
-            metadata_=meta,
-        )
-        session.add(msg)
-        session.commit()
-
-        result = session.get(Message, msg.id)
-        assert result is not None
-        assert result.metadata_ is not None
-        assert result.metadata_["sql"] == "SELECT * FROM users"
-        assert result.metadata_["nested"]["deep"] == [1, 2, 3]
 
     def test_encrypted_fields_store_binary(self, session) -> None:
         """BYTEA fields (encrypted_password, encrypted_api_key) store binary data."""
@@ -633,14 +1223,12 @@ class TestDatabaseCRUD:
             name="first",
             file_path="/tmp/1.csv",
             file_format="csv",
-            file_size_bytes=1,
             duckdb_table_name="ds_duplicate",
         )
         d2 = Dataset(
             name="second",
             file_path="/tmp/2.csv",
             file_format="csv",
-            file_size_bytes=2,
             duckdb_table_name="ds_duplicate",
         )
         session.add(d1)

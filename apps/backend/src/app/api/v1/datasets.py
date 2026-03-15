@@ -22,7 +22,7 @@ from app.dependencies import get_db, get_duckdb_manager, get_session_factory, ge
 from app.errors import AppError
 from app.logging import get_logger
 from app.models.dataset import DatasetStatus
-from app.models.orm import Dataset, SchemaMetadata
+from app.models.orm import DataProfile, Dataset, SchemaMetadata
 from app.services.duckdb_manager import DuckDBManager, sanitize_table_name
 from app.services.file_upload import (
     UPLOAD_CHUNK_SIZE,
@@ -147,7 +147,6 @@ async def upload_dataset(
         name=display_name,
         file_path=str(dest_path),
         file_format=file_format,
-        file_size_bytes=file_size,
         duckdb_table_name=duckdb_table,
         status=DatasetStatus.PROCESSING.value,
     )
@@ -171,7 +170,6 @@ async def upload_dataset(
         "id": dataset_id,
         "name": display_name,
         "file_format": file_format,
-        "file_size_bytes": file_size,
         "status": DatasetStatus.PROCESSING.value,
         "created_at": created_at,
     }
@@ -232,11 +230,30 @@ def _register_in_duckdb(
                 )
                 session.add(schema_row)
 
+            # Run data profiling: SUMMARIZE + sample values
+            summarize_results = duckdb_mgr.summarize_table(duckdb_table)
+            sample_values = duckdb_mgr.get_sample_values(duckdb_table)
+
+            # Store combined profile in Dataset.data_stats
+            dataset.data_stats = {
+                "summarize": summarize_results,
+                "sample_values": sample_values,
+            }
+
+            # Store in DataProfile for dedicated profiling access
+            profile = DataProfile(
+                dataset_id=dataset_id,
+                summarize_results=summarize_results,
+                sample_values=sample_values,
+            )
+            session.add(profile)
+
             logger.info(
                 "dataset_registration_complete",
                 dataset_id=str(dataset_id),
                 row_count=result.row_count,
                 column_count=len(result.columns),
+                profile_columns=len(summarize_results),
             )
         else:
             dataset.status = DatasetStatus.ERROR.value
@@ -275,7 +292,6 @@ def list_datasets(db: Session = Depends(get_db)) -> dict:
                 "id": str(ds.id),
                 "name": ds.name,
                 "file_format": ds.file_format,
-                "file_size_bytes": ds.file_size_bytes,
                 "row_count": ds.row_count,
                 "status": ds.status,
                 "created_at": ds.created_at.isoformat() if ds.created_at else None,
@@ -310,7 +326,6 @@ def get_dataset(dataset_id: UUID, db: Session = Depends(get_db)) -> dict:
         "id": str(dataset.id),
         "name": dataset.name,
         "file_format": dataset.file_format,
-        "file_size_bytes": dataset.file_size_bytes,
         "row_count": dataset.row_count,
         "duckdb_table_name": dataset.duckdb_table_name,
         "status": dataset.status,
@@ -388,6 +403,82 @@ def delete_dataset(
     logger.info("dataset_deleted", dataset_id=str(dataset_id))
 
     return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# Profile Endpoint
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{dataset_id}/profile")
+def get_dataset_profile(
+    dataset_id: UUID,
+    db: Session = Depends(get_db),
+    duckdb_mgr: DuckDBManager = Depends(get_duckdb_manager),
+    session_factory: sessionmaker[Session] = Depends(get_session_factory),
+) -> dict:
+    """Return stored profiling data for a dataset.
+
+    If the dataset exists but has not been profiled yet, triggers on-demand
+    profiling (SUMMARIZE + sample extraction) and stores the results before
+    returning them.
+    """
+    dataset = db.get(Dataset, dataset_id)
+
+    if dataset is None:
+        raise AppError(
+            code="NOT_FOUND",
+            message=f"Dataset {dataset_id} not found",
+            status_code=404,
+        )
+
+    # Look for existing profile
+    profile = db.query(DataProfile).filter(
+        DataProfile.dataset_id == dataset_id
+    ).first()
+
+    if profile is not None:
+        return {
+            "dataset_id": str(dataset_id),
+            "summarize_results": profile.summarize_results or [],
+            "sample_values": profile.sample_values or {},
+            "profiled_at": profile.profiled_at.isoformat() if profile.profiled_at else None,
+        }
+
+    # Dataset not yet profiled — trigger on-demand profiling
+    if dataset.status != DatasetStatus.READY.value:
+        raise AppError(
+            code="DATASET_NOT_READY",
+            message=f"Dataset is not ready for profiling. Current status: {dataset.status}",
+            status_code=409,
+        )
+
+    summarize_results = duckdb_mgr.summarize_table(dataset.duckdb_table_name)
+    sample_values = duckdb_mgr.get_sample_values(dataset.duckdb_table_name)
+
+    # Store in DataProfile
+    new_profile = DataProfile(
+        dataset_id=dataset_id,
+        summarize_results=summarize_results,
+        sample_values=sample_values,
+    )
+    db.add(new_profile)
+
+    # Also update Dataset.data_stats for consistency
+    dataset.data_stats = {
+        "summarize": summarize_results,
+        "sample_values": sample_values,
+    }
+
+    db.flush()
+    db.refresh(new_profile)
+
+    return {
+        "dataset_id": str(dataset_id),
+        "summarize_results": new_profile.summarize_results or [],
+        "sample_values": new_profile.sample_values or {},
+        "profiled_at": new_profile.profiled_at.isoformat() if new_profile.profiled_at else None,
+    }
 
 
 # ---------------------------------------------------------------------------

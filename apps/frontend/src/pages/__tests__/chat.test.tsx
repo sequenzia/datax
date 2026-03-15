@@ -4,6 +4,20 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ChatPage } from "../chat";
 import { ThemeProvider } from "@/providers/theme-provider";
 
+vi.mock("@/hooks/use-ai-status", () => ({
+  useAiStatus: () => ({
+    connectionStatus: "connected",
+    unavailableReason: null,
+    hasProvider: true,
+    bannerDismissed: false,
+    showBanner: false,
+    bannerMessage: "",
+    dismissBanner: vi.fn(),
+    chatDisabled: false,
+    chatDisabledMessage: null,
+  }),
+}));
+
 vi.mock("@/stores/chat-store", () => ({
   useChatStore: Object.assign(
     () => ({
@@ -11,10 +25,6 @@ vi.mock("@/stores/chat-store", () => ({
       messages: [],
       status: "idle",
       error: null,
-      streamingContent: "",
-      streamingMetadata: { sql: null, queryResult: null, chartConfig: null },
-      sendMessage: vi.fn(),
-      cancelStream: vi.fn(),
       clearError: vi.fn(),
       switchConversation: vi.fn(),
       restoreSession: vi.fn(),
@@ -23,7 +33,6 @@ vi.mock("@/stores/chat-store", () => ({
       getState: () => ({
         conversationId: null,
         newConversation: vi.fn().mockResolvedValue("new-id"),
-        sendMessage: vi.fn(),
         reset: vi.fn(),
       }),
     },

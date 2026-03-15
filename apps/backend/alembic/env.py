@@ -27,7 +27,7 @@ if config.config_file_name is not None:
 
 # Import all models so Alembic autogenerate detects them.
 # The import of app.models triggers app/models/__init__.py which
-# imports all 7 ORM entity models and re-exports Base.
+# imports all 10 v2 ORM entity models and re-exports Base.
 from app.models import Base  # noqa: E402
 
 target_metadata = Base.metadata

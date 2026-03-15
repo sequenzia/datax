@@ -24,6 +24,7 @@ interface SqlEditorState {
   selectedSource: DataSource | null;
   abortControllers: Map<string, AbortController>;
   addTab: () => void;
+  addTabWithContent: (content: string, title?: string) => void;
   closeTab: (id: string) => void;
   renameTab: (id: string, title: string) => void;
   setActiveTab: (id: string) => void;
@@ -71,6 +72,16 @@ export const useSqlEditorStore = create<SqlEditorState>((set, get) => ({
 
   addTab: () => {
     const newTab = createDefaultTab();
+    set((state) => ({
+      tabs: [...state.tabs, newTab],
+      activeTabId: newTab.id,
+    }));
+  },
+
+  addTabWithContent: (content: string, title?: string) => {
+    const newTab = createDefaultTab();
+    newTab.content = content;
+    if (title) newTab.title = title;
     set((state) => ({
       tabs: [...state.tabs, newTab],
       activeTabId: newTab.id,

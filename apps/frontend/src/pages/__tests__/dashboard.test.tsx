@@ -41,7 +41,6 @@ vi.mock("@/stores/chat-store", () => ({
     {
       getState: () => ({
         newConversation: vi.fn().mockResolvedValue("new-id"),
-        sendMessage: vi.fn(),
         reset: vi.fn(),
       }),
     },

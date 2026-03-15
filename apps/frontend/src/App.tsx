@@ -17,6 +17,12 @@ const SettingsPage = lazy(() =>
 const DataPage = lazy(() =>
   import("@/pages/data").then((m) => ({ default: m.DataPage })),
 );
+const DashboardsPage = lazy(() =>
+  import("@/pages/dashboards").then((m) => ({ default: m.DashboardsPage })),
+);
+const ExplorePage = lazy(() =>
+  import("@/pages/explore").then((m) => ({ default: m.ExplorePage })),
+);
 const NotFoundPage = lazy(() =>
   import("@/pages/not-found").then((m) => ({ default: m.NotFoundPage })),
 );
@@ -33,6 +39,9 @@ function App() {
           <Route path="settings" element={<SettingsPage />} />
           <Route path="data" element={<DataPage />} />
           <Route path="data/:type/:id" element={<DataPage />} />
+          <Route path="dashboards" element={<DashboardsPage />} />
+          <Route path="dashboards/:dashboardId" element={<DashboardsPage />} />
+          <Route path="explore" element={<ExplorePage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>
       </Routes>

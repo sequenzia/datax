@@ -1,6 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { MemoryRouter } from "react-router-dom";
 import { SqlEditorPage } from "../sql-editor";
 import { useSqlEditorStore } from "@/stores/sql-editor-store";
 import { useResultsStore } from "@/stores/results-store";
@@ -202,7 +203,7 @@ describe("SqlEditorPage", () => {
   });
 
   it("renders the SQL editor page with all sections", () => {
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     expect(screen.getByTestId("sql-editor-page")).toBeInTheDocument();
     expect(screen.getByTestId("tab-bar")).toBeInTheDocument();
@@ -212,13 +213,13 @@ describe("SqlEditorPage", () => {
   });
 
   it("renders the code editor", () => {
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     expect(screen.getByTestId("code-editor")).toBeInTheDocument();
   });
 
   it("shows run, save, and explain buttons in toolbar", () => {
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     expect(screen.getByTestId("run-query-button")).toBeInTheDocument();
     expect(screen.getByTestId("save-query-button")).toBeInTheDocument();
@@ -226,7 +227,7 @@ describe("SqlEditorPage", () => {
   });
 
   it("shows data source selector with available sources", () => {
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     const selector = screen.getByTestId("data-source-selector");
     expect(selector).toBeInTheDocument();
@@ -249,7 +250,7 @@ describe("SqlEditorPage", () => {
   });
 
   it("shows cursor position in toolbar", () => {
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     expect(screen.getByTestId("cursor-position")).toHaveTextContent(
       "Ln 1, Col 1",
@@ -258,7 +259,7 @@ describe("SqlEditorPage", () => {
 
   it("prevents execution of empty query", async () => {
     const user = userEvent.setup();
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     await user.click(screen.getByTestId("run-query-button"));
 
@@ -289,7 +290,7 @@ describe("SqlEditorPage", () => {
       abortControllers: new Map(),
     });
 
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     await user.click(screen.getByTestId("run-query-button"));
 
@@ -320,7 +321,7 @@ describe("SqlEditorPage", () => {
       abortControllers: new Map(),
     });
 
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     await user.click(screen.getByTestId("run-query-button"));
 
@@ -338,7 +339,7 @@ describe("SqlEditorPage", () => {
 
   it("creates new tab via add button", async () => {
     const user = userEvent.setup();
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     await user.click(screen.getByTestId("add-tab-button"));
 
@@ -377,7 +378,7 @@ describe("SqlEditorPage", () => {
       abortControllers: new Map(),
     });
 
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     expect(screen.getByTestId("mock-editor-textarea")).toHaveValue("SELECT 1");
 
@@ -417,7 +418,7 @@ describe("SqlEditorPage", () => {
       abortControllers: new Map(),
     });
 
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     expect(screen.getByTestId("mock-editor-textarea")).toHaveValue(
       "SELECT * FROM users",
@@ -465,7 +466,7 @@ describe("SqlEditorPage", () => {
       abortControllers: new Map(),
     });
 
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     await user.click(screen.getByTestId("tab-close-tab-a"));
 
@@ -474,7 +475,7 @@ describe("SqlEditorPage", () => {
   });
 
   it("shows empty results state initially", () => {
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     expect(screen.getByTestId("sql-results-empty")).toBeInTheDocument();
   });
@@ -498,7 +499,7 @@ describe("SqlEditorPage", () => {
       abortControllers: new Map(),
     });
 
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     expect(screen.getByTestId("run-query-button")).toBeDisabled();
   });
@@ -522,14 +523,14 @@ describe("SqlEditorPage", () => {
       abortControllers: new Map(),
     });
 
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     expect(screen.getByTestId("execution-time")).toHaveTextContent("42ms");
   });
 
   it("opens history panel when toggle is clicked", async () => {
     const user = userEvent.setup();
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     await user.click(screen.getByTestId("toggle-history"));
 
@@ -541,7 +542,7 @@ describe("SqlEditorPage", () => {
 
   it("loads query from history when entry is clicked", async () => {
     const user = userEvent.setup();
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     await user.click(screen.getByTestId("toggle-history"));
     await user.click(screen.getByTestId("history-entry-0"));
@@ -554,7 +555,7 @@ describe("SqlEditorPage", () => {
 
   it("filters history by search term", async () => {
     const user = userEvent.setup();
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     await user.click(screen.getByTestId("toggle-history"));
 
@@ -568,7 +569,7 @@ describe("SqlEditorPage", () => {
 
   it("opens saved queries panel when toggle is clicked", async () => {
     const user = userEvent.setup();
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     await user.click(screen.getByTestId("toggle-saved"));
 
@@ -579,7 +580,7 @@ describe("SqlEditorPage", () => {
 
   it("loads saved query into editor when clicked", async () => {
     const user = userEvent.setup();
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     await user.click(screen.getByTestId("toggle-saved"));
     // Click on the saved query text to load it
@@ -594,7 +595,7 @@ describe("SqlEditorPage", () => {
 
   it("deletes saved query when delete button is clicked", async () => {
     const user = userEvent.setup();
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     await user.click(screen.getByTestId("toggle-saved"));
     await user.click(screen.getByTestId("delete-saved-sq-1"));
@@ -625,7 +626,7 @@ describe("SqlEditorPage", () => {
       abortControllers: new Map(),
     });
 
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     // Click the mock save button (simulating Cmd+S in the editor)
     await user.click(screen.getByTestId("mock-save-button"));
@@ -661,7 +662,7 @@ describe("SqlEditorPage", () => {
       abortControllers: new Map(),
     });
 
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     await user.click(screen.getByTestId("explain-button"));
 
@@ -680,7 +681,7 @@ describe("SqlEditorPage", () => {
 
   it("closes side panel when toggle is clicked again", async () => {
     const user = userEvent.setup();
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     // Open history
     await user.click(screen.getByTestId("toggle-history"));
@@ -693,7 +694,7 @@ describe("SqlEditorPage", () => {
 
   it("switches between side panels", async () => {
     const user = userEvent.setup();
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     // Open history
     await user.click(screen.getByTestId("toggle-history"));
@@ -707,7 +708,7 @@ describe("SqlEditorPage", () => {
 
   it("selects a data source from the selector", async () => {
     const user = userEvent.setup();
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     const select = screen.getByTestId("source-select");
     await user.selectOptions(select, "dataset:ds-1");
@@ -757,7 +758,7 @@ describe("SqlEditorPage", () => {
       abortControllers: new Map(),
     });
 
-    render(<SqlEditorPage />);
+    render(<MemoryRouter><SqlEditorPage /></MemoryRouter>);
 
     // Switch to a different source
     const select = screen.getByTestId("source-select");

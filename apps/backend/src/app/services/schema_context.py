@@ -6,10 +6,19 @@ prompt on every request.  This gives the AI full awareness of available
 tables, columns, types, constraints, and relationships so it can generate
 accurate SQL.
 
+Enhanced with SUMMARIZE statistics and sample values per column to give
+the AI deep data understanding for better SQL generation. Stats include
+min, max, avg, std, null_percentage, approx_unique, and quartiles. Sample
+values (up to 5 per column) help the AI understand data patterns.
+
 Token budget handling:
     When the total schema exceeds MAX_SCHEMA_TABLES tables, sources are
     prioritised by recency (most recently created first) and the list is
     truncated with a summary of what was omitted.
+
+Wide table handling:
+    Tables with more than WIDE_TABLE_AI_LIMIT columns are truncated to
+    the first 100 columns in the AI prompt to avoid token overflows.
 
 Reserved-keyword quoting:
     Column and table names that collide with SQL reserved keywords are
@@ -20,6 +29,7 @@ Reserved-keyword quoting:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -27,6 +37,7 @@ from sqlalchemy.orm import Session
 
 from app.logging import get_logger
 from app.models.orm import Connection, Dataset, SchemaMetadata
+from app.services.duckdb_manager import WIDE_TABLE_AI_LIMIT
 
 logger = get_logger(__name__)
 
@@ -148,6 +159,8 @@ class ColumnContext:
     is_nullable: bool
     is_primary_key: bool
     foreign_key_ref: str | None = None
+    stats: dict[str, Any] | None = None
+    sample_values: list[Any] | None = None
 
 
 @dataclass
@@ -223,11 +236,11 @@ def _build_context_from_db(session: Session) -> SchemaContextResult:
             total_columns=0,
         )
 
-    # 2. Build a lookup for source names
-    source_names = _load_source_names(session, schema_rows)
+    # 2. Build a lookup for source info (names + profiling data)
+    source_info = _load_source_info(session, schema_rows)
 
-    # 3. Group rows by (source_id, table_name)
-    tables = _group_into_tables(schema_rows, source_names)
+    # 3. Group rows by (source_id, table_name) with stats enrichment
+    tables = _group_into_tables(schema_rows, source_info)
 
     # 4. Truncate if too many tables
     truncated = False
@@ -249,12 +262,22 @@ def _build_context_from_db(session: Session) -> SchemaContextResult:
     )
 
 
-def _load_source_names(
-    session: Session, schema_rows: list[SchemaMetadata]
-) -> dict[UUID, tuple[str, str]]:
-    """Load display names for all source IDs referenced in schema rows.
+@dataclass
+class _SourceInfo:
+    """Internal: resolved source display name, type, and optional profiling data."""
 
-    Returns a dict mapping source_id -> (display_name, source_type).
+    display_name: str
+    source_type: str
+    data_stats: dict[str, Any] | None = None
+
+
+def _load_source_info(
+    session: Session, schema_rows: list[SchemaMetadata]
+) -> dict[UUID, _SourceInfo]:
+    """Load display names and profiling data for all source IDs.
+
+    Returns a dict mapping source_id -> _SourceInfo with display_name,
+    source_type, and data_stats (for datasets that have been profiled).
     """
     # Collect unique source_ids by type
     dataset_ids: set[UUID] = set()
@@ -266,44 +289,108 @@ def _load_source_names(
         elif row.source_type == "connection":
             connection_ids.add(row.source_id)
 
-    result: dict[UUID, tuple[str, str]] = {}
+    result: dict[UUID, _SourceInfo] = {}
 
-    # Fetch dataset names
+    # Fetch dataset names + data_stats
     if dataset_ids:
-        ds_stmt = select(Dataset.id, Dataset.name).where(Dataset.id.in_(dataset_ids))
-        for ds_id, ds_name in session.execute(ds_stmt).all():
-            result[ds_id] = (ds_name, "dataset")
+        ds_stmt = select(Dataset.id, Dataset.name, Dataset.data_stats).where(
+            Dataset.id.in_(dataset_ids)
+        )
+        for ds_id, ds_name, ds_data_stats in session.execute(ds_stmt).all():
+            result[ds_id] = _SourceInfo(
+                display_name=ds_name,
+                source_type="dataset",
+                data_stats=ds_data_stats,
+            )
 
-    # Fetch connection names
+    # Fetch connection names (no profiling data for connections)
     if connection_ids:
         conn_stmt = select(Connection.id, Connection.name).where(
             Connection.id.in_(connection_ids)
         )
         for conn_id, conn_name in session.execute(conn_stmt).all():
-            result[conn_id] = (conn_name, "connection")
+            result[conn_id] = _SourceInfo(
+                display_name=conn_name,
+                source_type="connection",
+            )
 
     return result
 
 
+def _extract_column_stats(
+    data_stats: dict[str, Any] | None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, list[Any]]]:
+    """Extract per-column stats and sample values from a Dataset's data_stats.
+
+    Returns (stats_by_column, samples_by_column) where:
+    - stats_by_column maps column_name -> SUMMARIZE stat dict
+    - samples_by_column maps column_name -> list of sample values
+    """
+    if not data_stats:
+        return {}, {}
+
+    stats_by_column: dict[str, dict[str, Any]] = {}
+    summarize = data_stats.get("summarize")
+    if isinstance(summarize, list):
+        for entry in summarize:
+            if isinstance(entry, dict):
+                col_name = entry.get("column_name")
+                if col_name:
+                    stats_by_column[col_name] = entry
+
+    samples_by_column: dict[str, list[Any]] = {}
+    sample_values = data_stats.get("sample_values")
+    if isinstance(sample_values, dict):
+        samples_by_column = sample_values
+
+    return stats_by_column, samples_by_column
+
+
 def _group_into_tables(
     schema_rows: list[SchemaMetadata],
-    source_names: dict[UUID, tuple[str, str]],
+    source_info: dict[UUID, _SourceInfo],
 ) -> list[TableContext]:
-    """Group flat schema rows into table-level structures."""
+    """Group flat schema rows into table-level structures.
+
+    Enriches columns with SUMMARIZE statistics and sample values when
+    available from the source's profiling data. For wide tables, columns
+    beyond WIDE_TABLE_AI_LIMIT are excluded from the context.
+    """
     tables_by_key: dict[tuple[UUID, str], TableContext] = {}
+    # Cache parsed stats per source_id to avoid re-parsing for each column
+    stats_cache: dict[UUID, tuple[dict[str, dict[str, Any]], dict[str, list[Any]]]] = {}
 
     for row in schema_rows:
         key = (row.source_id, row.table_name)
 
         if key not in tables_by_key:
-            source_name, source_type = source_names.get(
-                row.source_id, ("Unknown", row.source_type)
-            )
+            info = source_info.get(row.source_id)
+            if info:
+                source_name = info.display_name
+                source_type = info.source_type
+            else:
+                source_name = "Unknown"
+                source_type = row.source_type
+
             tables_by_key[key] = TableContext(
                 table_name=row.table_name,
                 source_name=source_name,
                 source_type=source_type,
             )
+
+        # Extract stats for this column if available
+        col_stats: dict[str, Any] | None = None
+        col_samples: list[Any] | None = None
+
+        info = source_info.get(row.source_id)
+        if info and info.data_stats:
+            if row.source_id not in stats_cache:
+                stats_cache[row.source_id] = _extract_column_stats(info.data_stats)
+            stats_by_col, samples_by_col = stats_cache[row.source_id]
+            col_stats = stats_by_col.get(row.column_name)
+            samples = samples_by_col.get(row.column_name)
+            if samples:
+                col_samples = samples
 
         tables_by_key[key].columns.append(
             ColumnContext(
@@ -312,10 +399,78 @@ def _group_into_tables(
                 is_nullable=row.is_nullable,
                 is_primary_key=row.is_primary_key,
                 foreign_key_ref=row.foreign_key_ref,
+                stats=col_stats,
+                sample_values=col_samples,
             )
         )
 
+    # Apply WIDE_TABLE_AI_LIMIT: truncate columns for wide tables
+    for table in tables_by_key.values():
+        if len(table.columns) > WIDE_TABLE_AI_LIMIT:
+            table.columns = table.columns[:WIDE_TABLE_AI_LIMIT]
+
     return list(tables_by_key.values())
+
+
+def _format_stat_value(value: Any) -> str:
+    """Format a statistic value for display in the context.
+
+    Rounds floats to one decimal place for readability. Returns 'N/A'
+    for None values.
+    """
+    if value is None:
+        return "N/A"
+    if isinstance(value, float):
+        return f"{value:.1f}"
+    return str(value)
+
+
+def _format_column_stats(col: ColumnContext) -> list[str]:
+    """Format SUMMARIZE stats and sample values as indented lines.
+
+    Returns a list of formatted strings for the stats and samples lines
+    to append below the column definition.
+    """
+    lines: list[str] = []
+
+    if col.stats:
+        s = col.stats
+        # Main stats line: min, max, avg, std, null_percentage
+        stat_parts: list[str] = []
+        for key in ("min", "max", "avg", "std"):
+            val = s.get(key)
+            if val is not None:
+                stat_parts.append(f"{key}={_format_stat_value(val)}")
+        null_pct = s.get("null_percentage")
+        if null_pct is not None:
+            stat_parts.append(f"nulls={_format_stat_value(null_pct)}%")
+        if stat_parts:
+            lines.append(f"    Stats: {', '.join(stat_parts)}")
+
+        # Unique + quartiles line
+        detail_parts: list[str] = []
+        approx_unique = s.get("approx_unique")
+        if approx_unique is not None:
+            detail_parts.append(f"~{_format_stat_value(approx_unique)}")
+        for qkey in ("q25", "q50", "q75"):
+            val = s.get(qkey)
+            if val is not None:
+                label = qkey.upper()
+                detail_parts.append(f"{label}={_format_stat_value(val)}")
+        if detail_parts:
+            unique_prefix = f"Unique: {detail_parts[0]}" if approx_unique is not None else ""
+            quartile_parts = [p for p in detail_parts if not p.startswith("~")]
+            if unique_prefix and quartile_parts:
+                lines.append(f"    {unique_prefix}, {', '.join(quartile_parts)}")
+            elif unique_prefix:
+                lines.append(f"    {unique_prefix}")
+            elif quartile_parts:
+                lines.append(f"    {', '.join(quartile_parts)}")
+
+    if col.sample_values:
+        lines.append(f"    Samples: {col.sample_values}")
+
+    return lines
 
 
 def _format_tables(
@@ -331,16 +486,17 @@ def _format_tables(
 
         ### Dataset: "sales_data"
         Table: ds_sales_2024
-          - id (integer, PK, NOT NULL)
-          - "date" (date, NOT NULL)
-          - amount (decimal, nullable)
-          - customer_id (integer, NOT NULL, FK -> customers.id)
+          Column: id (integer, PK, NOT NULL)
+          Column: "date" (date, NOT NULL)
+          Column: revenue (DOUBLE)
+            Stats: min=100.0, max=99500.0, avg=12340.5, std=8750.2, nulls=2.1%
+            Unique: ~4523, Q25=5000.0, Q50=10000.0, Q75=18000.0
+            Samples: [100.0, 5432.0, 12000.0, 25000.0, 99500.0]
 
         ### Connection: "production_db"
         Table: users
-          - id (integer, PK, NOT NULL)
-          - "name" (varchar, NOT NULL)
-          - email (varchar, NOT NULL, UNIQUE)
+          Column: id (integer, PK, NOT NULL)
+          Column: email (varchar, NOT NULL)
     """
     lines: list[str] = ["## Available Data Sources", ""]
 
@@ -372,7 +528,11 @@ def _format_tables(
                     parts.append(f"FK -> {col.foreign_key_ref}")
 
                 annotation = ", ".join(parts)
-                lines.append(f"  - {col_display} ({annotation})")
+                lines.append(f"  Column: {col_display} ({annotation})")
+
+                # Add stats and sample values below the column
+                stat_lines = _format_column_stats(col)
+                lines.extend(stat_lines)
 
             lines.append("")  # blank line after each table
 

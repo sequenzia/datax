@@ -5,6 +5,7 @@ import {
   fetchDatasets,
   fetchDataset,
   fetchDatasetPreview,
+  fetchDatasetProfile,
   deleteDataset,
   uploadDataset,
 } from "@/lib/api";
@@ -40,6 +41,18 @@ export function useDatasetPreview(
     queryFn: () => fetchDatasetPreview(id!, params),
     enabled: !!id,
     retry: 2,
+  });
+}
+
+export function useDatasetProfile(id: string | undefined) {
+  return useQuery({
+    queryKey: ["datasets", id, "profile"],
+    queryFn: () => fetchDatasetProfile(id!),
+    enabled: !!id,
+    retry: (failureCount, error) => {
+      if (error instanceof Error && error.message.includes("404")) return false;
+      return failureCount < 3;
+    },
   });
 }
 

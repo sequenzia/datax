@@ -8,12 +8,16 @@ Provider resolution order:
 1. Env var API keys override UI-configured keys (same provider_name)
 2. If no env var, uses the encrypted API key from ProviderConfig
 3. If no provider configured at all, raises NoProviderConfiguredError
+
+Agent tools (registered via agent_tools.register_tools):
+    run_query, get_schema, summarize_table, render_chart, render_table,
+    render_data_profile, suggest_followups, create_bookmark, search_bookmarks
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from typing import Any
 
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
@@ -23,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.encryption import decrypt_value
 from app.logging import get_logger
+from app.services.agent_tools import AgentDeps, register_tools
 from app.services.provider_service import (
     PROVIDER_ENV_VARS,
     ProviderName,
@@ -73,21 +78,53 @@ You are DataX, an AI data analytics assistant. \
 Your role is to help users explore and understand their data \
 through natural language conversation.
 
-Your capabilities:
-- Generate SQL queries based on user questions
-- Analyze query results and provide clear explanations
-- Suggest appropriate visualizations for data
-- Help users refine their questions for better results
+You have access to the following tools:
+- run_query: Execute SQL queries against datasets (DuckDB) or \
+connections (external databases). Always use read-only SELECT \
+statements. If a query fails, analyze the error and retry.
+- get_schema: Retrieve column-level schema metadata for a source.
+- summarize_table: Get statistical summaries and sample values \
+for a dataset table.
+- render_chart: Generate interactive Plotly chart configs from \
+query results. Chart type is auto-selected or overridable.
+- render_table: Display query results as an interactive table.
+- render_data_profile: Show profiling statistics for a table.
+- suggest_followups: Generate follow-up question suggestions.
+- create_bookmark: Save a result as a bookmark for later.
+- search_bookmarks: Search saved bookmarks by title or SQL.
+
+Workflow for answering data questions:
+1. Identify the relevant data source from the schema context.
+2. Generate SQL using run_query with source_id and source_type.
+3. After results, use render_chart and render_table to display.
+4. Explain the results in natural language.
+5. Use suggest_followups to offer next exploration steps.
 
 Guidelines:
-- Always generate valid SQL for the target database dialect
-- Explain your reasoning when generating queries
-- When results are ambiguous, ask clarifying questions
-- Suggest chart types based on data shape: single numeric for KPIs, \
-time series for line charts, categories for bar charts, \
-proportions for pie charts, two numerics for scatter plots
-- If a query fails, analyze the error and suggest corrections
-- Never modify data unless explicitly asked — default to read-only queries
+- Generate valid SQL for the target dialect \
+(DuckDB for datasets, PostgreSQL/MySQL for connections).
+- Use read-only SELECT statements only. Never generate \
+INSERT, UPDATE, DELETE, DROP, or other write operations.
+- Include LIMIT clauses for broad queries (default 1000).
+- If a query fails, the error will be returned to you — analyze it and try a corrected SQL.
+- When results are ambiguous, ask clarifying questions.
+- Chart type heuristics: single numeric for KPIs, time series for line charts, \
+categories for bar charts, proportions for pie charts, two numerics for scatter plots.
+
+Follow-up suggestion guidelines:
+- After presenting query results, use suggest_followups when you detect \
+interesting patterns worth exploring further.
+- Look for these patterns: statistical outliers (values >2 standard deviations \
+from the mean), time-series trends (consistent increase/decrease), skewed \
+distributions (>80% of values in one category), unexpected null \
+concentrations (>20% nulls in a column).
+- Each suggestion should include a brief rationale explaining the pattern \
+detected (e.g., "3 outliers detected", "upward trend in last 6 months").
+- Do NOT suggest follow-ups for: simple lookups (e.g., "what tables do I \
+have?"), clarification responses, error states, or when no meaningful \
+patterns are present in the results.
+- Provide 2-3 targeted suggestions per result set. Never include generic or \
+obvious suggestions.
 
 Available schema context will be provided with each conversation."""
 
@@ -111,22 +148,9 @@ PROVIDER_MODEL_PREFIXES: dict[str, str] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Agent dependencies
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class AgentDeps:
-    """Dependencies injected into the Pydantic AI agent at runtime.
-
-    These are passed to tool functions and system prompt functions to provide
-    context about the current conversation and available data sources.
-    """
-
-    schema_context: str = ""
-    conversation_id: str | None = None
-    available_tables: list[str] = field(default_factory=list)
+# AgentDeps is imported from agent_tools and re-exported here for
+# backward compatibility with existing imports.
+__all__ = ["AgentDeps", "NoProviderConfiguredError", "InvalidProviderError"]
 
 
 # ---------------------------------------------------------------------------
@@ -380,21 +404,39 @@ def create_agent(
         name="datax-analytics",
     )
 
+    # Register all 9 agent tools (run_query, get_schema, summarize_table,
+    # render_chart, render_table, render_data_profile, suggest_followups,
+    # create_bookmark, search_bookmarks)
+    register_tools(agent)
+
     logger.info(
         "agent_created",
         provider=record.provider_name,
         model=record.model_name,
         provider_source=record.source,
+        tools_registered=9,
     )
 
     return agent
 
 
-def build_agent_deps(session: Session) -> AgentDeps:
-    """Build AgentDeps with schema context from the database.
+def build_agent_deps(
+    session: Session,
+    *,
+    duckdb_manager: Any | None = None,
+    connection_manager: Any | None = None,
+    query_service: Any | None = None,
+    session_factory: Any | None = None,
+    max_query_timeout: int = 30,
+    max_retries: int = 3,
+    analysis_state: Any | None = None,
+    conversation_id: str | None = None,
+) -> AgentDeps:
+    """Build AgentDeps with schema context and service references.
 
     Queries all available schema metadata and constructs an ``AgentDeps``
-    instance with the formatted schema context and available table names.
+    instance with the formatted schema context, available table names,
+    and references to data services needed by agent tools.
 
     This is the primary entry point for per-request schema injection:
     callers should create deps via this function and pass them to
@@ -402,9 +444,17 @@ def build_agent_deps(session: Session) -> AgentDeps:
 
     Args:
         session: An active SQLAlchemy session.
+        duckdb_manager: Optional DuckDB manager for dataset queries.
+        connection_manager: Optional connection manager for external DB queries.
+        query_service: Optional query service for SQL execution.
+        session_factory: Optional session factory for bookmark operations.
+        max_query_timeout: Maximum query timeout in seconds.
+        max_retries: Maximum retry attempts for self-correction.
+        analysis_state: Optional AnalysisState for conversation context.
+        conversation_id: Optional conversation UUID string.
 
     Returns:
-        An AgentDeps instance populated with schema context.
+        An AgentDeps instance populated with schema context and service refs.
     """
     schema_result = build_schema_context(session)
 
@@ -425,4 +475,92 @@ def build_agent_deps(session: Session) -> AgentDeps:
     return AgentDeps(
         schema_context=schema_result.context_text,
         available_tables=available_tables,
+        analysis_state=analysis_state,
+        conversation_id=conversation_id,
+        duckdb_manager=duckdb_manager,
+        connection_manager=connection_manager,
+        query_service=query_service,
+        session_factory=session_factory,
+        max_query_timeout=max_query_timeout,
+        max_retries=max_retries,
     )
+
+
+# ---------------------------------------------------------------------------
+# Conversation context helpers
+# ---------------------------------------------------------------------------
+
+
+def load_analysis_state(
+    session: Session,
+    conversation_id: str,
+    provider_name: str = "",
+) -> Any:
+    """Load AnalysisState from the Conversation.analysis_context JSONB column.
+
+    Args:
+        session: An active SQLAlchemy session.
+        conversation_id: UUID string of the conversation.
+        provider_name: The AI provider name (for token budget calculation).
+
+    Returns:
+        An AnalysisState instance (empty if conversation not found or no context).
+    """
+    import uuid as uuid_mod
+
+    from app.models.orm import Conversation
+    from app.services.conversation_context import AnalysisState
+
+    try:
+        conv_uuid = uuid_mod.UUID(conversation_id)
+    except (ValueError, TypeError):
+        state = AnalysisState()
+        state.provider_name = provider_name
+        return state
+
+    conv = session.get(Conversation, conv_uuid)
+    if conv is None:
+        state = AnalysisState()
+        state.provider_name = provider_name
+        return state
+
+    state = AnalysisState.from_dict(conv.analysis_context)
+    state.provider_name = provider_name
+    return state
+
+
+def save_analysis_state(
+    session: Session,
+    conversation_id: str,
+    state: Any,
+) -> None:
+    """Persist AnalysisState to the Conversation.analysis_context JSONB column.
+
+    Args:
+        session: An active SQLAlchemy session.
+        conversation_id: UUID string of the conversation.
+        state: The AnalysisState to save.
+    """
+    import uuid as uuid_mod
+
+    from app.models.orm import Conversation
+
+    try:
+        conv_uuid = uuid_mod.UUID(conversation_id)
+    except (ValueError, TypeError):
+        logger.warning(
+            "save_analysis_state_invalid_conversation_id",
+            conversation_id=conversation_id,
+        )
+        return
+
+    conv = session.get(Conversation, conv_uuid)
+    if conv is None:
+        logger.warning(
+            "save_analysis_state_conversation_not_found",
+            conversation_id=conversation_id,
+        )
+        return
+
+    conv.analysis_context = state.to_dict()
+    session.commit()

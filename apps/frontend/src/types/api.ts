@@ -228,3 +228,82 @@ export interface SchemaSource {
 export interface SchemaResponse {
   sources: SchemaSource[];
 }
+
+export interface Bookmark {
+  id: string;
+  message_id: string;
+  title: string;
+  sql: string | null;
+  chart_config: Record<string, unknown> | null;
+  result_snapshot: Record<string, unknown> | null;
+  source_id: string | null;
+  source_type: string | null;
+  created_at: string;
+}
+
+export interface BookmarkListResponse {
+  bookmarks: Bookmark[];
+}
+
+export interface CreateBookmarkRequest {
+  message_id: string;
+  title: string;
+}
+
+export interface DashboardItem {
+  id: string;
+  dashboard_id: string;
+  bookmark_id: string;
+  position: number;
+  bookmark: Bookmark | null;
+  created_at: string;
+}
+
+export interface Dashboard {
+  id: string;
+  title: string;
+  items: DashboardItem[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DashboardListResponse {
+  dashboards: Dashboard[];
+}
+
+export interface CreateDashboardRequest {
+  title: string;
+}
+
+export interface UpdateDashboardRequest {
+  title: string;
+}
+
+export interface AddDashboardItemRequest {
+  bookmark_id: string;
+  position: number;
+}
+
+/** Per-column statistics from DuckDB SUMMARIZE. */
+export interface ColumnSummary {
+  column_name: string;
+  column_type: string;
+  min: string | null;
+  max: string | null;
+  avg: string | null;
+  std: string | null;
+  approx_unique: number | null;
+  null_percentage: string | null;
+  q25: string | null;
+  q50: string | null;
+  q75: string | null;
+  count: string | null;
+}
+
+/** Stored data profiling results for a dataset. */
+export interface DatasetProfile {
+  dataset_id: string;
+  summarize_results: ColumnSummary[];
+  sample_values: Record<string, unknown[]>;
+  profiled_at: string | null;
+}

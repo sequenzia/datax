@@ -4,7 +4,17 @@ import type {
   Dataset,
   DatasetDetail,
   DatasetPreview,
+  DatasetProfile,
   DatasetUploadResponse,
+  Bookmark,
+  BookmarkListResponse,
+  CreateBookmarkRequest,
+  Dashboard,
+  DashboardItem,
+  DashboardListResponse,
+  CreateDashboardRequest,
+  UpdateDashboardRequest,
+  AddDashboardItemRequest,
   Connection,
   ConnectionDetail,
   ConnectionTestResult,
@@ -74,6 +84,10 @@ export function fetchDatasetPreview(
   if (params.sort_order) search.set("sort_order", params.sort_order);
   const qs = search.toString();
   return apiFetch<DatasetPreview>(`/datasets/${id}/preview${qs ? `?${qs}` : ""}`);
+}
+
+export function fetchDatasetProfile(id: string): Promise<DatasetProfile> {
+  return apiFetch<DatasetProfile>(`/datasets/${id}/profile`);
 }
 
 export function deleteDataset(id: string): Promise<void> {
@@ -301,129 +315,80 @@ export function fetchConversationDetail(
   return apiFetch<ConversationDetail>(`/conversations/${id}`);
 }
 
-/** SSE event types emitted by the chat streaming endpoint. */
-export type SSEEventType =
-  | "message_start"
-  | "token"
-  | "sql_generated"
-  | "query_result"
-  | "chart_config"
-  | "message_end"
-  | "error";
+/* -------------------------------------------------------------------------- */
+/*  Bookmarks                                                                  */
+/* -------------------------------------------------------------------------- */
 
-export interface SSECallbacks {
-  onToken?: (token: string) => void;
-  onMessageStart?: (data: Record<string, unknown>) => void;
-  onMessageEnd?: (data: Record<string, unknown>) => void;
-  onSqlGenerated?: (sql: string) => void;
-  onQueryResult?: (data: Record<string, unknown>) => void;
-  onChartConfig?: (config: Record<string, unknown>) => void;
-  onError?: (error: string) => void;
+export async function fetchBookmarks(): Promise<Bookmark[]> {
+  const data = await apiFetch<BookmarkListResponse>("/bookmarks");
+  return data.bookmarks;
 }
 
-/**
- * Send a message to a conversation and stream the AI response via SSE.
- * Returns an AbortController for cancellation.
- */
-export function sendMessageSSE(
-  conversationId: string,
-  content: string,
-  callbacks: SSECallbacks,
-): AbortController {
-  const controller = new AbortController();
-
-  const doStream = async () => {
-    try {
-      const response = await fetch(
-        `${API_BASE}/conversations/${conversationId}/messages`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "text/event-stream",
-          },
-          body: JSON.stringify({ content }),
-          signal: controller.signal,
-        },
-      );
-
-      if (!response.ok) {
-        const text = await response.text().catch(() => response.statusText);
-        callbacks.onError?.(text || `API error: ${response.status}`);
-        return;
-      }
-
-      const reader = response.body?.getReader();
-      if (!reader) {
-        callbacks.onError?.("No response body");
-        return;
-      }
-
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let eventType = "";
-      let eventData = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const rawLine of lines) {
-          const line = rawLine.endsWith("\r")
-            ? rawLine.slice(0, -1)
-            : rawLine;
-          if (line.startsWith("event: ")) {
-            eventType = line.slice(7).trim();
-          } else if (line.startsWith("data: ")) {
-            eventData = line.slice(6);
-          } else if (line === "" && eventType && eventData) {
-            try {
-              const parsed = JSON.parse(eventData) as Record<string, unknown>;
-              switch (eventType as SSEEventType) {
-                case "token":
-                  callbacks.onToken?.(parsed.content as string);
-                  break;
-                case "message_start":
-                  callbacks.onMessageStart?.(parsed);
-                  break;
-                case "message_end":
-                  callbacks.onMessageEnd?.(parsed);
-                  break;
-                case "sql_generated":
-                  callbacks.onSqlGenerated?.(parsed.sql as string);
-                  break;
-                case "query_result":
-                  callbacks.onQueryResult?.(parsed);
-                  break;
-                case "chart_config":
-                  callbacks.onChartConfig?.(parsed);
-                  break;
-                case "error":
-                  callbacks.onError?.(parsed.message as string);
-                  break;
-              }
-            } catch {
-              // Skip malformed JSON lines
-            }
-            eventType = "";
-            eventData = "";
-          }
-        }
-      }
-    } catch (err: unknown) {
-      if (err instanceof DOMException && err.name === "AbortError") {
-        return;
-      }
-      callbacks.onError?.(
-        err instanceof Error ? err.message : "Stream connection failed",
-      );
-    }
-  };
-
-  void doStream();
-  return controller;
+export function createBookmark(
+  body: CreateBookmarkRequest,
+): Promise<Bookmark> {
+  return apiMutate<Bookmark>("/bookmarks", {
+    method: "POST",
+    body,
+  });
 }
+
+export function deleteBookmark(id: string): Promise<void> {
+  return apiMutate<void>(`/bookmarks/${id}`, { method: "DELETE" });
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Dashboards                                                                  */
+/* -------------------------------------------------------------------------- */
+
+export async function fetchDashboards(): Promise<Dashboard[]> {
+  const data = await apiFetch<DashboardListResponse>("/dashboards");
+  return data.dashboards;
+}
+
+export function fetchDashboard(id: string): Promise<Dashboard> {
+  return apiFetch<Dashboard>(`/dashboards/${id}`);
+}
+
+export function createDashboard(
+  body: CreateDashboardRequest,
+): Promise<Dashboard> {
+  return apiMutate<Dashboard>("/dashboards", {
+    method: "POST",
+    body,
+  });
+}
+
+export function updateDashboard(
+  id: string,
+  body: UpdateDashboardRequest,
+): Promise<Dashboard> {
+  return apiMutate<Dashboard>(`/dashboards/${id}`, {
+    method: "PUT",
+    body,
+  });
+}
+
+export function deleteDashboard(id: string): Promise<void> {
+  return apiMutate<void>(`/dashboards/${id}`, { method: "DELETE" });
+}
+
+export function addDashboardItem(
+  dashboardId: string,
+  body: AddDashboardItemRequest,
+): Promise<DashboardItem> {
+  return apiMutate<DashboardItem>(`/dashboards/${dashboardId}/items`, {
+    method: "POST",
+    body,
+  });
+}
+
+export function removeDashboardItem(
+  dashboardId: string,
+  itemId: string,
+): Promise<void> {
+  return apiMutate<void>(`/dashboards/${dashboardId}/items/${itemId}`, {
+    method: "DELETE",
+  });
+}
+

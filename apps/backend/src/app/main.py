@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.agui import create_agui_app
 from app.api.health import router as health_router
 from app.api.v1.router import router as v1_router
 from app.config import Settings, get_settings
@@ -103,7 +104,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Signal handlers cannot be installed in some test/thread contexts.
         logger.debug("signal_handlers_skipped", reason="not_main_thread_or_no_loop")
 
+    # Verify DuckDB is accessible before proceeding.
+    duckdb_health = app.state.duckdb_manager.health_check()
+    if not duckdb_health["healthy"]:
+        logger.error(
+            "duckdb_health_check_failed_on_startup",
+            error=duckdb_health.get("error"),
+        )
+    else:
+        logger.info(
+            "duckdb_health_check_passed",
+            database=duckdb_health["database"],
+            table_count=duckdb_health["table_count"],
+        )
+
     # Re-register DuckDB views for datasets that survived a restart.
+    # With file-backed storage, views persist in DuckDB, but we still
+    # run rehydration to reconcile state with PostgreSQL metadata
+    # (e.g., mark datasets as error if underlying files are missing).
     try:
         _rehydrate_duckdb_views(
             session_factory=app.state.session_factory,
@@ -166,7 +184,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.session_factory = create_session_factory(engine)
 
     # Attach DuckDB manager for file-based analytics.
-    app.state.duckdb_manager = DuckDBManager()
+    app.state.duckdb_manager = DuckDBManager(
+        database=settings.datax_duckdb_path,
+        httpfs_enabled=settings.datax_httpfs_enabled,
+        s3_access_key_id=settings.aws_access_key_id,
+        s3_secret_access_key=settings.aws_secret_access_key,
+        s3_region=settings.aws_default_region,
+        httpfs_timeout=settings.datax_httpfs_timeout,
+    )
 
     # Attach connection manager for external database connections.
     app.state.connection_manager = ConnectionManager()
@@ -188,6 +213,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # API routers
     app.include_router(v1_router)
+
+    # Mount AG-UI ASGI app for CopilotKit communication.
+    # The sub-app has its own CORS middleware since FastAPI CORS
+    # does not propagate to mounted sub-applications.
+    # Service references are passed so agent tools can access DuckDB,
+    # QueryService, and database sessions.
+    from app.services.query_service import QueryService
+
+    query_service = QueryService(
+        duckdb_manager=app.state.duckdb_manager,
+        connection_manager=app.state.connection_manager,
+        max_query_timeout=settings.datax_max_query_timeout,
+    )
+    agui_app = create_agui_app(
+        cors_origins=settings.cors_origins,
+        duckdb_manager=app.state.duckdb_manager,
+        connection_manager=app.state.connection_manager,
+        query_service=query_service,
+        session_factory=app.state.session_factory,
+        max_query_timeout=settings.datax_max_query_timeout,
+        max_retries=settings.datax_max_retries,
+    )
+    app.mount("/api/agent", agui_app)
 
     logger.info(
         "application_configured",

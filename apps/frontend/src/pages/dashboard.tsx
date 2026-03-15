@@ -45,9 +45,6 @@ function HeroChatInput() {
     const newId = await useChatStore.getState().newConversation();
     if (newId) {
       navigate(`/chat/${newId}`);
-      setTimeout(() => {
-        void useChatStore.getState().sendMessage(value);
-      }, 0);
     }
   }, [navigate]);
 
@@ -61,18 +58,12 @@ function HeroChatInput() {
     [handleSubmit],
   );
 
-  const handleSuggestionClick = useCallback(
-    async (question: string) => {
-      const newId = await useChatStore.getState().newConversation();
-      if (newId) {
-        navigate(`/chat/${newId}`);
-        setTimeout(() => {
-          void useChatStore.getState().sendMessage(question);
-        }, 0);
-      }
-    },
-    [navigate],
-  );
+  const handleSuggestionClick = useCallback(async () => {
+    const newId = await useChatStore.getState().newConversation();
+    if (newId) {
+      navigate(`/chat/${newId}`);
+    }
+  }, [navigate]);
 
   return (
     <section className="mx-auto max-w-2xl space-y-4 text-center">

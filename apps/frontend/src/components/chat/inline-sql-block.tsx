@@ -1,7 +1,9 @@
 import { useState, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { Copy, Check, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { useSqlEditorStore } from "@/stores/sql-editor-store";
 
 const SQL_KEYWORDS = new Set([
   "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "IS", "NULL",
@@ -36,12 +38,18 @@ interface InlineSqlBlockProps {
 
 export function InlineSqlBlock({ sql, className }: InlineSqlBlockProps) {
   const [copied, setCopied] = useState(false);
+  const navigate = useNavigate();
 
   const handleCopy = useCallback(async () => {
     await navigator.clipboard.writeText(sql);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }, [sql]);
+
+  const handleOpenInEditor = useCallback(() => {
+    useSqlEditorStore.getState().addTabWithContent(sql, "Chat Query");
+    navigate("/sql");
+  }, [sql, navigate]);
 
   return (
     <div
@@ -70,12 +78,11 @@ export function InlineSqlBlock({ sql, className }: InlineSqlBlockProps) {
           <Button
             variant="ghost"
             size="icon-xs"
-            asChild
+            onClick={handleOpenInEditor}
             aria-label="Open in SQL Editor"
+            data-testid="open-in-editor-button"
           >
-            <a href={`/sql?sql=${encodeURIComponent(sql)}`}>
-              <ExternalLink className="size-3" />
-            </a>
+            <ExternalLink className="size-3" />
           </Button>
         </div>
       </div>

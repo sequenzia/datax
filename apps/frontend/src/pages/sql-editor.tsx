@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Play,
   Save,
@@ -13,10 +14,12 @@ import {
   CheckCircle,
   Database,
   Loader2,
+  Bot,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CodeEditor, TabBar, SqlResultsPanel } from "@/components/sql-editor";
 import { useSqlEditorStore } from "@/stores/sql-editor-store";
+import { useChatStore } from "@/stores/chat-store";
 import { useResultsStore } from "@/stores/results-store";
 import type { QueryResult } from "@/stores/results-store";
 import { useTheme } from "@/hooks/use-theme";
@@ -326,6 +329,7 @@ export function SqlEditorPage() {
     clearTabResults,
   } = useSqlEditorStore();
 
+  const navigate = useNavigate();
   const { addResult } = useResultsStore();
   const { resolvedTheme } = useTheme();
   const { toast, showToast, dismissToast } = useToast();
@@ -572,6 +576,40 @@ export function SqlEditorPage() {
     [activeTab, updateTabContent],
   );
 
+  const handleAskAi = useCallback(() => {
+    if (!activeTab) return;
+    const query = activeTab.content.trim();
+    if (!query) return;
+
+    useChatStore.getState().setPendingMessage(`Explain this query:\n\`\`\`sql\n${query}\n\`\`\``);
+    navigate("/chat");
+  }, [activeTab, navigate]);
+
+  const handleBookmarkResult = useCallback(
+    (result: QueryResult) => {
+      if (!result.sql) return;
+      saveMutation.mutate(
+        {
+          name: result.title || "Pinned Query",
+          sql_content: result.sql,
+          source_id: selectedSource?.id ?? null,
+          source_type: selectedSource?.type ?? null,
+        },
+        {
+          onSuccess: () => {
+            showToast("Result pinned as saved query.", "success");
+          },
+          onError: (error) => {
+            const msg =
+              error instanceof Error ? error.message : "Failed to pin result.";
+            showToast(msg, "error");
+          },
+        },
+      );
+    },
+    [selectedSource, saveMutation, showToast],
+  );
+
   const handleSourceChange = useCallback(
     (source: DataSource | null) => {
       setSelectedSource(source);
@@ -666,6 +704,16 @@ export function SqlEditorPage() {
           <FileText className="size-3" />
           <span>Explain</span>
         </Button>
+        <Button
+          variant="ghost"
+          size="xs"
+          onClick={handleAskAi}
+          disabled={!activeTab.content.trim()}
+          data-testid="ask-ai-button"
+        >
+          <Bot className="size-3" />
+          <span>Ask AI</span>
+        </Button>
 
         <div className="mx-1 h-4 w-px bg-border" />
 
@@ -749,6 +797,7 @@ export function SqlEditorPage() {
               results={activeTab.results}
               isExecuting={activeTab.isExecuting}
               error={activeTab.error}
+              onBookmark={handleBookmarkResult}
             />
           </div>
         </div>

@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { NavLink, useNavigate, useLocation } from "react-router-dom";
 import {
   LayoutDashboard,
+  LayoutGrid,
   MessageSquare,
   Code2,
   Database,
@@ -13,6 +14,9 @@ import {
   Loader2,
   AlertCircle,
   Search,
+  Bookmark,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useUIStore } from "@/stores/ui-store";
@@ -21,6 +25,7 @@ import {
   useConversationList,
   useDeleteConversation,
 } from "@/hooks/use-conversations";
+import { useBookmarkList, useDeleteBookmark } from "@/hooks/use-bookmarks";
 import { Button } from "@/components/ui/button";
 import { SchemaBrowser } from "@/components/schema-browser/schema-browser";
 import {
@@ -29,12 +34,13 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ThemeToggle } from "@/components/theme-toggle";
-import type { Conversation } from "@/types/api";
+import type { Conversation, Bookmark as BookmarkType } from "@/types/api";
 
 // Icon-only navigation items in the sidebar footer
 const footerNavItems = [
-  { to: "/", icon: LayoutDashboard, label: "Dashboard", end: true },
+  { to: "/", icon: LayoutDashboard, label: "Home", end: true },
   { to: "/chat", icon: MessageSquare, label: "Chat", end: false },
+  { to: "/dashboards", icon: LayoutGrid, label: "Dashboards", end: false },
   { to: "/sql", icon: Code2, label: "SQL Editor", end: false },
   { to: "/data", icon: Database, label: "Data Sources", end: false },
   { to: "/settings", icon: Settings, label: "Settings", end: false },
@@ -284,6 +290,90 @@ function SidebarConversationList() {
   );
 }
 
+function SidebarBookmarkList() {
+  const navigate = useNavigate();
+  const [expanded, setExpanded] = useState(true);
+  const { data: bookmarks, isLoading } = useBookmarkList();
+  const deleteMutation = useDeleteBookmark();
+
+  const handleBookmarkClick = useCallback(
+    (bookmark: BookmarkType) => {
+      // Navigate to the SQL editor with the bookmark's SQL pre-loaded
+      if (bookmark.sql) {
+        void navigate(`/sql?bookmark=${bookmark.id}`);
+      }
+    },
+    [navigate],
+  );
+
+  const handleDelete = useCallback(
+    (e: React.MouseEvent, id: string) => {
+      e.stopPropagation();
+      deleteMutation.mutate(id);
+    },
+    [deleteMutation],
+  );
+
+  if (isLoading) return null;
+  if (!bookmarks || bookmarks.length === 0) return null;
+
+  return (
+    <div className="border-t border-sidebar-border" data-testid="sidebar-bookmarks">
+      {/* Section header */}
+      <button
+        onClick={() => setExpanded((prev) => !prev)}
+        className="flex w-full items-center gap-1.5 px-3 py-2 text-xs font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground"
+        data-testid="sidebar-bookmarks-toggle"
+      >
+        {expanded ? (
+          <ChevronDown className="size-3" />
+        ) : (
+          <ChevronRight className="size-3" />
+        )}
+        <Bookmark className="size-3" />
+        Bookmarks ({bookmarks.length})
+      </button>
+
+      {/* Bookmark items */}
+      {expanded && (
+        <div className="space-y-0.5 px-2 pb-2" data-testid="sidebar-bookmark-items">
+          {bookmarks.map((bm) => (
+            <div
+              key={bm.id}
+              role="button"
+              tabIndex={0}
+              onClick={() => handleBookmarkClick(bm)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  handleBookmarkClick(bm);
+                }
+              }}
+              className="group flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-accent/50"
+              data-testid="sidebar-bookmark-item"
+              title={bm.sql ? `${bm.title}\n${bm.sql}` : bm.title}
+            >
+              <Bookmark className="size-3.5 shrink-0 text-primary/70" />
+              <span className="min-w-0 flex-1 truncate text-xs">
+                {bm.title}
+              </span>
+              <button
+                type="button"
+                onClick={(e) => handleDelete(e, bm.id)}
+                className="invisible shrink-0 rounded p-0.5 text-muted-foreground hover:text-destructive group-hover:visible"
+                aria-label={`Delete bookmark ${bm.title}`}
+                data-testid="sidebar-bookmark-delete"
+              >
+                <Trash2 className="size-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Draggable horizontal divider between conversation list and schema browser */
 function SidebarDivider({ onResize }: { onResize: (deltaY: number) => void }) {
   const isDragging = useRef(false);
@@ -393,15 +483,20 @@ export function Sidebar() {
         </Button>
       </div>
 
-      {/* Expanded content: conversations + schema */}
+      {/* Expanded content: conversations + bookmarks + schema */}
       {sidebarOpen && (
         <>
-          {/* Conversations section */}
+          {/* Conversations + bookmarks section */}
           <div
             className="min-h-0 overflow-hidden"
             style={{ flex: `${sidebarConversationRatio} 1 0%` }}
           >
-            <SidebarConversationList />
+            <div className="flex h-full flex-col">
+              <div className="min-h-0 flex-1 overflow-hidden">
+                <SidebarConversationList />
+              </div>
+              <SidebarBookmarkList />
+            </div>
           </div>
 
           {/* Draggable divider */}

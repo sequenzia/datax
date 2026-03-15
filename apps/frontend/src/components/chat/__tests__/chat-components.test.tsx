@@ -22,7 +22,6 @@ vi.mock("streamdown", () => ({
 
 describe("ChatInput", () => {
   const mockOnSend = vi.fn();
-  const mockOnCancel = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -30,7 +29,7 @@ describe("ChatInput", () => {
 
   it("renders textarea and send button", () => {
     render(
-      <ChatInput onSend={mockOnSend} isStreaming={false} />,
+      <ChatInput onSend={mockOnSend} />,
     );
     expect(screen.getByTestId("chat-input")).toBeInTheDocument();
     expect(screen.getByTestId("send-button")).toBeInTheDocument();
@@ -38,7 +37,7 @@ describe("ChatInput", () => {
 
   it("prevents empty submission", async () => {
     render(
-      <ChatInput onSend={mockOnSend} isStreaming={false} />,
+      <ChatInput onSend={mockOnSend} />,
     );
     const sendButton = screen.getByTestId("send-button");
     await userEvent.click(sendButton);
@@ -47,7 +46,7 @@ describe("ChatInput", () => {
 
   it("prevents whitespace-only submission", async () => {
     render(
-      <ChatInput onSend={mockOnSend} isStreaming={false} />,
+      <ChatInput onSend={mockOnSend} />,
     );
     const input = screen.getByTestId("chat-input");
     await userEvent.type(input, "   ");
@@ -57,7 +56,7 @@ describe("ChatInput", () => {
 
   it("sends message on form submit with content", async () => {
     render(
-      <ChatInput onSend={mockOnSend} isStreaming={false} />,
+      <ChatInput onSend={mockOnSend} />,
     );
     const input = screen.getByTestId("chat-input");
     await userEvent.type(input, "Hello AI");
@@ -67,7 +66,7 @@ describe("ChatInput", () => {
 
   it("clears input after sending", async () => {
     render(
-      <ChatInput onSend={mockOnSend} isStreaming={false} />,
+      <ChatInput onSend={mockOnSend} />,
     );
     const input = screen.getByTestId("chat-input") as HTMLTextAreaElement;
     await userEvent.type(input, "Hello AI");
@@ -77,7 +76,7 @@ describe("ChatInput", () => {
 
   it("sends on Ctrl+Enter", async () => {
     render(
-      <ChatInput onSend={mockOnSend} isStreaming={false} />,
+      <ChatInput onSend={mockOnSend} />,
     );
     const input = screen.getByTestId("chat-input");
     await userEvent.type(input, "Hello");
@@ -87,7 +86,7 @@ describe("ChatInput", () => {
 
   it("sends on Meta+Enter", async () => {
     render(
-      <ChatInput onSend={mockOnSend} isStreaming={false} />,
+      <ChatInput onSend={mockOnSend} />,
     );
     const input = screen.getByTestId("chat-input");
     await userEvent.type(input, "Hello");
@@ -95,50 +94,11 @@ describe("ChatInput", () => {
     expect(mockOnSend).toHaveBeenCalledWith("Hello");
   });
 
-  it("shows cancel button when streaming", () => {
-    render(
-      <ChatInput
-        onSend={mockOnSend}
-        onCancel={mockOnCancel}
-        isStreaming={true}
-      />,
-    );
-    expect(screen.getByTestId("cancel-stream-button")).toBeInTheDocument();
-    expect(screen.queryByTestId("send-button")).not.toBeInTheDocument();
-  });
-
-  it("calls onCancel when cancel button is clicked", async () => {
-    render(
-      <ChatInput
-        onSend={mockOnSend}
-        onCancel={mockOnCancel}
-        isStreaming={true}
-      />,
-    );
-    await userEvent.click(screen.getByTestId("cancel-stream-button"));
-    expect(mockOnCancel).toHaveBeenCalledTimes(1);
-  });
-
   it("disables input when disabled prop is true", () => {
     render(
-      <ChatInput onSend={mockOnSend} isStreaming={false} disabled />,
+      <ChatInput onSend={mockOnSend} disabled />,
     );
     expect(screen.getByTestId("chat-input")).toBeDisabled();
-  });
-
-  it("does not send when streaming", async () => {
-    render(
-      <ChatInput
-        onSend={mockOnSend}
-        onCancel={mockOnCancel}
-        isStreaming={true}
-      />,
-    );
-    const input = screen.getByTestId("chat-input");
-    await userEvent.type(input, "Hello");
-    // Try Ctrl+Enter while streaming
-    await userEvent.keyboard("{Control>}{Enter}{/Control}");
-    expect(mockOnSend).not.toHaveBeenCalled();
   });
 });
 

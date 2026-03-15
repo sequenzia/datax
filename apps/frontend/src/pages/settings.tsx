@@ -21,6 +21,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/hooks/use-theme";
 import { useOnboardingStore } from "@/stores/onboarding-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import {
   useProviders,
   useCreateProvider,
@@ -588,6 +589,10 @@ function ProvidersSection() {
 
 function PreferencesSection() {
   const { theme, setTheme } = useTheme();
+  const previewSql = useSettingsStore((s) => s.previewSqlBeforeExecution);
+  const setPreviewSql = useSettingsStore((s) => s.setPreviewSqlBeforeExecution);
+  const verboseErrors = useSettingsStore((s) => s.verboseErrors);
+  const setVerboseErrors = useSettingsStore((s) => s.setVerboseErrors);
 
   return (
     <section aria-labelledby="preferences-heading">
@@ -614,6 +619,40 @@ function PreferencesSection() {
               <option value="light">Light</option>
               <option value="dark">Dark</option>
             </select>
+          </div>
+
+          <div className="flex items-center justify-between border-t pt-4">
+            <div>
+              <p className="text-sm font-medium">Preview SQL before execution</p>
+              <p className="text-xs text-muted-foreground">
+                Review and approve generated SQL queries before they run.
+              </p>
+            </div>
+            <input
+              type="checkbox"
+              checked={previewSql}
+              onChange={(e) => setPreviewSql(e.target.checked)}
+              className="rounded border"
+              aria-label="Preview SQL before execution"
+              data-testid="preview-sql-toggle"
+            />
+          </div>
+
+          <div className="flex items-center justify-between border-t pt-4">
+            <div>
+              <p className="text-sm font-medium">Verbose error details</p>
+              <p className="text-xs text-muted-foreground">
+                Show AI self-correction steps during query retries.
+              </p>
+            </div>
+            <input
+              type="checkbox"
+              checked={verboseErrors}
+              onChange={(e) => setVerboseErrors(e.target.checked)}
+              className="rounded border"
+              aria-label="Verbose error details"
+              data-testid="verbose-errors-toggle"
+            />
           </div>
         </CardContent>
       </Card>

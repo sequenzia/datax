@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     )
 
     # Optional with defaults
+    datax_duckdb_path: Path = Field(
+        default=Path("../../data/datax.duckdb"),
+        alias="DATAX_DUCKDB_PATH",
+        description="File path for persistent DuckDB database",
+    )
     datax_storage_path: Path = Field(
         default=Path("../../data/uploads"),
         alias="DATAX_STORAGE_PATH",
@@ -63,6 +68,35 @@ class Settings(BaseSettings):
         default=None,
         alias="DATAX_GEMINI_API_KEY",
         description="Google Gemini API key (overrides UI-configured key)",
+    )
+
+    # httpfs extension for remote data access
+    datax_httpfs_enabled: bool = Field(
+        default=True,
+        alias="DATAX_HTTPFS_ENABLED",
+        description="Enable DuckDB httpfs extension for S3/HTTP remote file access",
+    )
+    datax_httpfs_timeout: int = Field(
+        default=30,
+        alias="DATAX_HTTPFS_TIMEOUT",
+        description="HTTP timeout in seconds for remote file access via httpfs",
+    )
+
+    # AWS credentials for S3 access via httpfs
+    aws_access_key_id: str | None = Field(
+        default=None,
+        alias="AWS_ACCESS_KEY_ID",
+        description="AWS access key for S3 remote data access",
+    )
+    aws_secret_access_key: str | None = Field(
+        default=None,
+        alias="AWS_SECRET_ACCESS_KEY",
+        description="AWS secret key for S3 remote data access",
+    )
+    aws_default_region: str | None = Field(
+        default=None,
+        alias="AWS_DEFAULT_REGION",
+        description="AWS region for S3 remote data access",
     )
 
     # CORS - stored as comma-separated string, exposed as list via computed_field

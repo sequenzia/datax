@@ -1,22 +1,20 @@
-"""Query execution, history, and saved queries API endpoints.
+"""Query execution, history, pagination, and cross-source query API endpoints.
 
 Provides endpoints for executing raw SQL, getting EXPLAIN plans,
-managing saved queries, and viewing query execution history.
+server-side pagination of query results, cross-source queries,
+and viewing query execution history.
 """
 
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
 
-from app.dependencies import get_db
 from app.errors import AppError
 from app.logging import get_logger
-from app.models.orm import SavedQuery
 from app.services.cross_source_query import CrossSourcePlan, SubQuery
 from app.services.query_service import QueryService, is_read_only_sql
 
@@ -61,31 +59,27 @@ class ExplainResponse(BaseModel):
     plan: str
 
 
-class SaveQueryRequest(BaseModel):
-    """Request body for saving a query."""
+class PaginateRequest(BaseModel):
+    """Request body for server-side pagination of query results."""
 
-    name: str = Field(..., min_length=1, max_length=255, description="Query name")
-    sql_content: str = Field(..., min_length=1, description="SQL query content")
-    source_id: uuid.UUID | None = Field(None, description="Optional source UUID")
-    source_type: str | None = Field(None, description="Optional source type")
-
-
-class SavedQueryResponse(BaseModel):
-    """Response for a saved query."""
-
-    id: str
-    name: str
-    sql_content: str
-    source_id: str | None
-    source_type: str | None
-    created_at: str | None
-    updated_at: str | None
+    sql: str = Field(..., min_length=1, description="SQL query to paginate")
+    source_id: uuid.UUID = Field(..., description="UUID of the dataset or connection")
+    source_type: str = Field(..., description="Source type: 'dataset' or 'connection'")
+    offset: int = Field(default=0, ge=0, description="Number of rows to skip")
+    limit: int = Field(default=100, ge=1, le=10_000, description="Maximum rows to return")
+    sort_by: str | None = Field(None, description="Column name to sort by")
+    sort_order: Literal["asc", "desc"] = Field(default="asc", description="Sort direction")
 
 
-class SavedQueryListResponse(BaseModel):
-    """Response for listing saved queries."""
+class PaginateResponse(BaseModel):
+    """Response for paginated query results."""
 
-    queries: list[SavedQueryResponse]
+    columns: list[str]
+    rows: list[list[Any]]
+    total_rows: int
+    offset: int
+    limit: int
+    execution_time_ms: int
 
 
 class CrossSourceSubQueryRequest(BaseModel):
@@ -365,127 +359,72 @@ def explain_query(
     return ExplainResponse(plan=result.plan)
 
 
-@router.post("/save", status_code=201)
-def save_query(
-    body: SaveQueryRequest,
-    db: Session = Depends(get_db),
-) -> SavedQueryResponse:
-    """Save a query for later use.
+@router.post("/paginate")
+def paginate_query(
+    body: PaginateRequest,
+    request: Request,
+) -> PaginateResponse:
+    """Paginate query results with server-side LIMIT/OFFSET.
 
-    Stores the query in the persistent database.
+    Re-executes the original SQL wrapped as a subquery with LIMIT/OFFSET
+    and optional ORDER BY. Returns paginated rows and the total row count
+    for the original query. Routes through DuckDB for datasets and
+    SQLAlchemy for connections.
     """
-    saved = SavedQuery(
-        name=body.name,
-        sql_content=body.sql_content,
+    if body.source_type not in ("dataset", "connection"):
+        raise AppError(
+            code="INVALID_SOURCE_TYPE",
+            message=f"Invalid source_type '{body.source_type}'. Must be 'dataset' or 'connection'.",
+            status_code=400,
+        )
+
+    if not is_read_only_sql(body.sql):
+        raise AppError(
+            code="READ_ONLY_VIOLATION",
+            message="Only read-only SQL statements are allowed. "
+            "INSERT, UPDATE, DELETE, DROP, and other write operations are not permitted.",
+            status_code=400,
+        )
+
+    query_service = _get_query_service(request)
+    result = query_service.paginate(
+        sql=body.sql,
         source_id=body.source_id,
         source_type=body.source_type,
-    )
-    db.add(saved)
-    db.flush()
-
-    logger.info("query_saved", query_id=str(saved.id), name=body.name)
-
-    return SavedQueryResponse(
-        id=str(saved.id),
-        name=saved.name,
-        sql_content=saved.sql_content,
-        source_id=str(saved.source_id) if saved.source_id else None,
-        source_type=saved.source_type,
-        created_at=saved.created_at.isoformat() if saved.created_at else None,
-        updated_at=saved.updated_at.isoformat() if saved.updated_at else None,
+        offset=body.offset,
+        limit=body.limit,
+        sort_by=body.sort_by,
+        sort_order=body.sort_order,
     )
 
-
-@router.get("/saved")
-def list_saved_queries(
-    db: Session = Depends(get_db),
-) -> SavedQueryListResponse:
-    """List all saved queries.
-
-    Returns saved queries sorted by updated_at descending.
-    """
-    from sqlalchemy import select
-
-    stmt = select(SavedQuery).order_by(SavedQuery.updated_at.desc())
-    saved_queries = list(db.execute(stmt).scalars().all())
-
-    return SavedQueryListResponse(
-        queries=[
-            SavedQueryResponse(
-                id=str(sq.id),
-                name=sq.name,
-                sql_content=sq.sql_content,
-                source_id=str(sq.source_id) if sq.source_id else None,
-                source_type=sq.source_type,
-                created_at=sq.created_at.isoformat() if sq.created_at else None,
-                updated_at=sq.updated_at.isoformat() if sq.updated_at else None,
-            )
-            for sq in saved_queries
-        ]
-    )
-
-
-@router.delete("/saved/{query_id}", status_code=204)
-def delete_saved_query(
-    query_id: uuid.UUID,
-    db: Session = Depends(get_db),
-) -> None:
-    """Delete a saved query by ID.
-
-    Returns 204 No Content on success, 404 if not found.
-    """
-    from sqlalchemy import select
-
-    stmt = select(SavedQuery).where(SavedQuery.id == query_id)
-    saved = db.execute(stmt).scalar_one_or_none()
-    if not saved:
+    if result.status == "timeout":
         raise AppError(
-            code="SAVED_QUERY_NOT_FOUND",
-            message=f"Saved query {query_id} not found.",
-            status_code=404,
+            code="QUERY_TIMEOUT",
+            message=result.error_message or "Query exceeded the time limit.",
+            status_code=408,
         )
-    db.delete(saved)
-    db.flush()
-    logger.info("saved_query_deleted", query_id=str(query_id))
 
-
-@router.put("/saved/{query_id}")
-def update_saved_query(
-    query_id: uuid.UUID,
-    body: SaveQueryRequest,
-    db: Session = Depends(get_db),
-) -> SavedQueryResponse:
-    """Update a saved query by ID.
-
-    Returns the updated saved query, or 404 if not found.
-    """
-    from sqlalchemy import select
-
-    stmt = select(SavedQuery).where(SavedQuery.id == query_id)
-    saved = db.execute(stmt).scalar_one_or_none()
-    if not saved:
+    if result.error_message and "not found" in result.error_message.lower():
         raise AppError(
-            code="SAVED_QUERY_NOT_FOUND",
-            message=f"Saved query {query_id} not found.",
+            code="SOURCE_NOT_FOUND",
+            message=result.error_message,
             status_code=404,
         )
 
-    saved.name = body.name
-    saved.sql_content = body.sql_content
-    saved.source_id = body.source_id
-    saved.source_type = body.source_type
-    db.flush()
+    if result.error_message:
+        raise AppError(
+            code="INVALID_SQL",
+            message=result.error_message,
+            status_code=400,
+        )
 
-    logger.info("saved_query_updated", query_id=str(query_id), name=body.name)
-
-    return SavedQueryResponse(
-        id=str(saved.id),
-        name=saved.name,
-        sql_content=saved.sql_content,
-        source_id=str(saved.source_id) if saved.source_id else None,
-        source_type=saved.source_type,
-        created_at=saved.created_at.isoformat() if saved.created_at else None,
-        updated_at=saved.updated_at.isoformat() if saved.updated_at else None,
+    return PaginateResponse(
+        columns=result.columns,
+        rows=result.rows,
+        total_rows=result.total_rows,
+        offset=result.offset,
+        limit=result.limit,
+        execution_time_ms=result.execution_time_ms,
     )
 
 

@@ -8,14 +8,6 @@ interface MessageBubbleProps {
   content: string;
   /** Message metadata containing SQL, query results, chart config etc. */
   metadata?: Record<string, unknown> | null;
-  /** Streaming metadata (accumulated from SSE events during streaming) */
-  streamingMetadata?: {
-    sql: string | null;
-    queryResult: Record<string, unknown> | null;
-    chartConfig: Record<string, unknown> | null;
-  } | null;
-  /** If true, show as streaming (used with StreamingText externally) */
-  isStreaming?: boolean;
   children?: React.ReactNode;
 }
 
@@ -23,14 +15,9 @@ export function MessageBubble({
   role,
   content,
   metadata,
-  streamingMetadata,
-  isStreaming = false,
   children,
 }: MessageBubbleProps) {
   const isUser = role === "user";
-
-  // Build effective metadata from either finalized metadata or streaming metadata
-  const effectiveMetadata = metadata ?? buildStreamingMeta(streamingMetadata);
 
   return (
     <div
@@ -63,7 +50,6 @@ export function MessageBubble({
           isUser
             ? "bg-primary text-primary-foreground"
             : "bg-muted text-foreground",
-          isStreaming && "min-w-[60px]",
           !isUser && "overflow-x-auto",
         )}
       >
@@ -75,26 +61,10 @@ export function MessageBubble({
           ))}
 
         {/* Inline result blocks for assistant messages */}
-        {!isUser && effectiveMetadata && (
-          <InlineResultBlock metadata={effectiveMetadata} />
+        {!isUser && metadata && (
+          <InlineResultBlock metadata={metadata} />
         )}
       </div>
     </div>
   );
-}
-
-/** Build a metadata-like object from streaming metadata for progressive rendering */
-function buildStreamingMeta(
-  streaming?: {
-    sql: string | null;
-    queryResult: Record<string, unknown> | null;
-    chartConfig: Record<string, unknown> | null;
-  } | null,
-): Record<string, unknown> | null {
-  if (!streaming) return null;
-  const meta: Record<string, unknown> = {};
-  if (streaming.sql) meta.sql = streaming.sql;
-  if (streaming.queryResult) meta.query_result = streaming.queryResult;
-  if (streaming.chartConfig) meta.chart_config = streaming.chartConfig;
-  return Object.keys(meta).length > 0 ? meta : null;
 }

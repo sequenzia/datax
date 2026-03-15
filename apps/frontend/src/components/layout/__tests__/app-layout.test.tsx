@@ -28,9 +28,6 @@ vi.mock("@/stores/chat-store", () => ({
       messages: [],
       status: "idle",
       error: null,
-      streamingContent: "",
-      sendMessage: vi.fn(),
-      cancelStream: vi.fn(),
       clearError: vi.fn(),
       newConversation: vi.fn(),
       switchConversation: vi.fn(),
@@ -52,6 +49,20 @@ vi.mock("@/hooks/use-schema", () => ({
     isLoading: false,
     isError: false,
     error: null,
+  }),
+}));
+
+vi.mock("@/hooks/use-ai-status", () => ({
+  useAiStatus: () => ({
+    connectionStatus: "connected",
+    unavailableReason: null,
+    hasProvider: true,
+    bannerDismissed: false,
+    showBanner: false,
+    bannerMessage: "",
+    dismissBanner: vi.fn(),
+    chatDisabled: false,
+    chatDisabledMessage: null,
   }),
 }));
 

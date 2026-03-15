@@ -3,7 +3,10 @@
 Covers:
 - Unit: Schema extraction for each supported file format (CSV, Excel, Parquet, JSON)
 - Unit: Table name generation and sanitization
+- Unit: DuckDBManager initializes with file path
 - Integration: File registration -> query execution round-trip
+- Integration: Tables persist across DuckDBManager reconnections
+- Integration: Health check detects accessible vs inaccessible database
 - Edge cases: empty files, wide tables, mixed types, no headers, corrupted files
 - Error handling: missing files, unsupported formats, corrupted data
 """
@@ -11,6 +14,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 import struct
 import tempfile
 from pathlib import Path
@@ -625,3 +629,222 @@ class TestColumnInfo:
         assert c.data_type == "UUID"
         assert c.is_nullable is False
         assert c.is_primary_key is True
+
+
+# ---------------------------------------------------------------------------
+# Unit Tests: File-backed initialization
+# ---------------------------------------------------------------------------
+
+
+class TestFileBackedInitialization:
+    """Test DuckDBManager initializes correctly with file-backed storage."""
+
+    def test_initializes_with_file_path(self, tmp_dir: Path) -> None:
+        """DuckDBManager accepts a file path and creates the database."""
+        db_path = tmp_dir / "test.duckdb"
+        mgr = DuckDBManager(database=db_path)
+
+        assert db_path.exists()
+        mgr.close()
+
+    def test_auto_creates_parent_directory(self, tmp_dir: Path) -> None:
+        """Parent directories are auto-created for the database file."""
+        db_path = tmp_dir / "nested" / "dir" / "test.duckdb"
+        mgr = DuckDBManager(database=db_path)
+
+        assert db_path.parent.exists()
+        assert db_path.exists()
+        mgr.close()
+
+    def test_initializes_with_string_path(self, tmp_dir: Path) -> None:
+        """DuckDBManager accepts a string path."""
+        db_path = str(tmp_dir / "string_path.duckdb")
+        mgr = DuckDBManager(database=db_path)
+
+        assert Path(db_path).exists()
+        mgr.close()
+
+    def test_default_is_in_memory(self) -> None:
+        """Default initialization uses in-memory database."""
+        mgr = DuckDBManager()
+        health = mgr.health_check()
+
+        assert health["healthy"]
+        assert health["database"] == ":memory:"
+        mgr.close()
+
+    def test_first_startup_creates_new_database(self, tmp_dir: Path) -> None:
+        """First startup with a non-existent path creates a fresh database."""
+        db_path = tmp_dir / "brand_new.duckdb"
+        assert not db_path.exists()
+
+        mgr = DuckDBManager(database=db_path)
+        assert db_path.exists()
+
+        # Should be usable
+        health = mgr.health_check()
+        assert health["healthy"]
+        mgr.close()
+
+    def test_unwritable_directory_raises_error(self, tmp_dir: Path) -> None:
+        """Raises OSError if the database directory is not writable."""
+        readonly_dir = tmp_dir / "readonly"
+        readonly_dir.mkdir()
+        os.chmod(readonly_dir, 0o444)
+
+        try:
+            with pytest.raises(OSError, match="not writable"):
+                DuckDBManager(database=readonly_dir / "test.duckdb")
+        finally:
+            os.chmod(readonly_dir, 0o755)
+
+
+# ---------------------------------------------------------------------------
+# Integration Tests: Persistence across reconnections
+# ---------------------------------------------------------------------------
+
+
+class TestPersistenceAcrossReconnections:
+    """Integration: tables persist across DuckDBManager close/reopen cycles."""
+
+    def test_views_persist_across_restarts(self, tmp_dir: Path) -> None:
+        """Views created in one session are available after reconnecting."""
+        db_path = tmp_dir / "persist.duckdb"
+        csv_path = _write_csv(
+            tmp_dir / "data.csv",
+            "id,name\n1,Alice\n2,Bob\n",
+        )
+
+        # Session 1: register a file
+        mgr1 = DuckDBManager(database=db_path)
+        result = mgr1.register_file(csv_path, "ds_persist", "csv")
+        assert result.is_success
+        mgr1.close()
+
+        # Session 2: reconnect and verify the view is still accessible
+        mgr2 = DuckDBManager(database=db_path)
+        assert mgr2.is_table_registered("ds_persist")
+
+        rows = mgr2.execute_query("SELECT * FROM ds_persist ORDER BY id")
+        assert len(rows) == 2
+        assert rows[0]["name"] == "Alice"
+        assert rows[1]["name"] == "Bob"
+        mgr2.close()
+
+    def test_multiple_views_persist(self, tmp_dir: Path) -> None:
+        """Multiple registered views all persist across restarts."""
+        db_path = tmp_dir / "multi.duckdb"
+        csv1 = _write_csv(tmp_dir / "a.csv", "x\n10\n")
+        csv2 = _write_csv(tmp_dir / "b.csv", "y\n20\n")
+
+        # Session 1: register two tables
+        mgr1 = DuckDBManager(database=db_path)
+        mgr1.register_file(csv1, "ds_a", "csv")
+        mgr1.register_file(csv2, "ds_b", "csv")
+        mgr1.close()
+
+        # Session 2: verify both are available
+        mgr2 = DuckDBManager(database=db_path)
+        tables = mgr2.list_tables()
+        assert "ds_a" in tables
+        assert "ds_b" in tables
+
+        rows_a = mgr2.execute_query("SELECT x FROM ds_a")
+        assert rows_a[0]["x"] == 10
+
+        rows_b = mgr2.execute_query("SELECT y FROM ds_b")
+        assert rows_b[0]["y"] == 20
+        mgr2.close()
+
+    def test_unregistered_view_does_not_persist(self, tmp_dir: Path) -> None:
+        """Views that were unregistered do not reappear after restart."""
+        db_path = tmp_dir / "unreg.duckdb"
+        csv_path = _write_csv(tmp_dir / "data.csv", "a\n1\n")
+
+        # Session 1: register then unregister
+        mgr1 = DuckDBManager(database=db_path)
+        mgr1.register_file(csv_path, "ds_temp", "csv")
+        mgr1.unregister_table("ds_temp")
+        mgr1.close()
+
+        # Session 2: verify it's gone
+        mgr2 = DuckDBManager(database=db_path)
+        assert not mgr2.is_table_registered("ds_temp")
+        mgr2.close()
+
+    def test_queries_work_after_reconnect(self, tmp_dir: Path) -> None:
+        """Aggregation queries on persisted views work after reconnecting."""
+        db_path = tmp_dir / "query.duckdb"
+        csv_path = _write_csv(
+            tmp_dir / "sales.csv",
+            "product,amount\nA,100\nB,200\nA,150\n",
+        )
+
+        # Session 1: register
+        mgr1 = DuckDBManager(database=db_path)
+        mgr1.register_file(csv_path, "ds_sales", "csv")
+        mgr1.close()
+
+        # Session 2: query
+        mgr2 = DuckDBManager(database=db_path)
+        rows = mgr2.execute_query(
+            "SELECT product, SUM(amount) AS total "
+            "FROM ds_sales GROUP BY product ORDER BY product"
+        )
+        assert len(rows) == 2
+        assert rows[0]["product"] == "A"
+        assert rows[0]["total"] == 250
+        assert rows[1]["product"] == "B"
+        assert rows[1]["total"] == 200
+        mgr2.close()
+
+
+# ---------------------------------------------------------------------------
+# Integration Tests: Health check
+# ---------------------------------------------------------------------------
+
+
+class TestHealthCheck:
+    """Integration: health check detects accessible vs inaccessible database."""
+
+    def test_healthy_in_memory_database(self) -> None:
+        """In-memory database reports healthy."""
+        mgr = DuckDBManager()
+        health = mgr.health_check()
+
+        assert health["healthy"] is True
+        assert health["database"] == ":memory:"
+        assert health["table_count"] == 0
+        assert "error" not in health
+        mgr.close()
+
+    def test_healthy_file_database(self, tmp_dir: Path) -> None:
+        """File-backed database reports healthy."""
+        db_path = tmp_dir / "health.duckdb"
+        mgr = DuckDBManager(database=db_path)
+        health = mgr.health_check()
+
+        assert health["healthy"] is True
+        assert str(db_path) in health["database"]
+        mgr.close()
+
+    def test_health_check_reports_table_count(self, tmp_dir: Path) -> None:
+        """Health check reports the correct number of registered tables."""
+        db_path = tmp_dir / "tables.duckdb"
+        csv_path = _write_csv(tmp_dir / "data.csv", "a\n1\n")
+
+        mgr = DuckDBManager(database=db_path)
+        mgr.register_file(csv_path, "ds_check", "csv")
+        health = mgr.health_check()
+
+        assert health["table_count"] == 1
+        mgr.close()
+
+    def test_health_check_after_close_reports_unhealthy(self) -> None:
+        """Health check after closing the connection reports unhealthy."""
+        mgr = DuckDBManager()
+        mgr.close()
+        health = mgr.health_check()
+
+        assert health["healthy"] is False
+        assert "error" in health

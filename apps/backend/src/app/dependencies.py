@@ -5,10 +5,11 @@ from __future__ import annotations
 from collections.abc import Generator
 from pathlib import Path
 
-from fastapi import Request
+from fastapi import Depends, Request
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings
+from app.services.bookmark_service import BookmarkService
 from app.services.connection_manager import ConnectionManager
 from app.services.duckdb_manager import DuckDBManager
 
@@ -70,3 +71,10 @@ def get_db(request: Request) -> Generator[Session, None, None]:
         raise
     finally:
         session.close()
+
+
+def get_bookmark_service(
+    db: Session = Depends(get_db),
+) -> BookmarkService:
+    """Create a BookmarkService instance with the current DB session."""
+    return BookmarkService(db)

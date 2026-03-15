@@ -1,5 +1,7 @@
-import { AlertCircle, Loader2, BarChart3 } from "lucide-react";
+import { useState, useCallback } from "react";
+import { AlertCircle, Loader2, BarChart3, Pin, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardHeader,
@@ -12,12 +14,14 @@ interface SqlResultsPanelProps {
   results: QueryResult[];
   isExecuting: boolean;
   error: string | null;
+  onBookmark?: (result: QueryResult) => void;
 }
 
 export function SqlResultsPanel({
   results,
   isExecuting,
   error,
+  onBookmark,
 }: SqlResultsPanelProps) {
   if (isExecuting) {
     return (
@@ -86,80 +90,119 @@ export function SqlResultsPanel({
       >
         <div className="flex flex-col gap-3">
           {results.map((result) => (
-            <Card key={result.id} data-testid={`sql-result-card-${result.id}`}>
-              <CardHeader className="flex-row items-center gap-2 py-3">
-                <CardTitle className="flex-1 truncate text-sm">
-                  {result.title}
-                </CardTitle>
-                <span className="text-xs text-muted-foreground">
-                  {result.rowCount} row{result.rowCount !== 1 ? "s" : ""}
-                </span>
-              </CardHeader>
-              <CardContent className="border-t border-border py-3">
-                {result.sql && (
-                  <div className="mb-3">
-                    <p className="mb-1 text-xs font-medium text-muted-foreground">
-                      SQL
-                    </p>
-                    <pre className="overflow-x-auto rounded-md bg-muted p-2 text-xs">
-                      <code>{result.sql}</code>
-                    </pre>
-                  </div>
-                )}
-
-                {result.data && result.data.length > 0 && (
-                  <div>
-                    <div className="overflow-x-auto rounded-md border">
-                      <table className="w-full text-xs">
-                        <thead>
-                          <tr className="border-b bg-muted/50">
-                            {result.columns.map((col) => (
-                              <th
-                                key={col}
-                                className="px-3 py-1.5 text-left font-medium text-muted-foreground"
-                              >
-                                {col}
-                              </th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {result.data.slice(0, 50).map((row, rowIdx) => (
-                            <tr
-                              key={rowIdx}
-                              className={cn(
-                                "border-b last:border-b-0",
-                                rowIdx % 2 === 1 && "bg-muted/25",
-                              )}
-                            >
-                              {result.columns.map((col) => (
-                                <td key={col} className="px-3 py-1.5">
-                                  {String(row[col] ?? "")}
-                                </td>
-                              ))}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                      {result.data.length > 50 && (
-                        <p className="px-3 py-1.5 text-xs text-muted-foreground">
-                          Showing 50 of {result.rowCount} rows
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {(!result.data || result.data.length === 0) && (
-                  <p className="text-sm text-muted-foreground">
-                    Query executed successfully. No data returned.
-                  </p>
-                )}
-              </CardContent>
-            </Card>
+            <ResultCard
+              key={result.id}
+              result={result}
+              onBookmark={onBookmark}
+            />
           ))}
         </div>
       </div>
     </div>
+  );
+}
+
+function ResultCard({
+  result,
+  onBookmark,
+}: {
+  result: QueryResult;
+  onBookmark?: (result: QueryResult) => void;
+}) {
+  const [pinned, setPinned] = useState(false);
+
+  const handlePin = useCallback(() => {
+    onBookmark?.(result);
+    setPinned(true);
+    setTimeout(() => setPinned(false), 2000);
+  }, [result, onBookmark]);
+
+  return (
+    <Card data-testid={`sql-result-card-${result.id}`}>
+      <CardHeader className="flex-row items-center gap-2 py-3">
+        <CardTitle className="flex-1 truncate text-sm">
+          {result.title}
+        </CardTitle>
+        {onBookmark && (
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={handlePin}
+            aria-label="Pin result"
+            data-testid={`pin-result-${result.id}`}
+          >
+            {pinned ? (
+              <Check className="size-3 text-green-500" />
+            ) : (
+              <Pin className="size-3" />
+            )}
+          </Button>
+        )}
+        <span className="text-xs text-muted-foreground">
+          {result.rowCount} row{result.rowCount !== 1 ? "s" : ""}
+        </span>
+      </CardHeader>
+      <CardContent className="border-t border-border py-3">
+        {result.sql && (
+          <div className="mb-3">
+            <p className="mb-1 text-xs font-medium text-muted-foreground">
+              SQL
+            </p>
+            <pre className="overflow-x-auto rounded-md bg-muted p-2 text-xs">
+              <code>{result.sql}</code>
+            </pre>
+          </div>
+        )}
+
+        {result.data && result.data.length > 0 && (
+          <div>
+            <div className="overflow-x-auto rounded-md border">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b bg-muted/50">
+                    {result.columns.map((col) => (
+                      <th
+                        key={col}
+                        className="px-3 py-1.5 text-left font-medium text-muted-foreground"
+                      >
+                        {col}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.data.slice(0, 50).map((row, rowIdx) => (
+                    <tr
+                      key={rowIdx}
+                      className={cn(
+                        "border-b last:border-b-0",
+                        rowIdx % 2 === 1 && "bg-muted/25",
+                      )}
+                    >
+                      {result.columns.map((col) => (
+                        <td key={col} className="px-3 py-1.5">
+                          {String(row[col] ?? "")}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {result.data.length > 50 && (
+                <p className="px-3 py-1.5 text-xs text-muted-foreground">
+                  Showing 50 of {result.rowCount} rows
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {(!result.data || result.data.length === 0) && (
+          <p className="text-sm text-muted-foreground">
+            Query executed successfully. No data returned.
+          </p>
+        )}
+      </CardContent>
+    </Card>
   );
 }
