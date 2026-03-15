@@ -24,6 +24,12 @@ export interface Connection {
   updated_at: string;
 }
 
+export interface DataSource {
+  id: string;
+  name: string;
+  type: "dataset" | "connection";
+}
+
 export interface Conversation {
   id: string;
   title: string;

@@ -1,5 +1,8 @@
 import { create } from "zustand";
 import type { QueryResult } from "@/stores/results-store";
+import type { DataSource } from "@/types/api";
+
+export type { DataSource };
 
 export interface SqlTab {
   id: string;
@@ -10,12 +13,6 @@ export interface SqlTab {
   error: string | null;
   results: QueryResult[];
   executionTimeMs: number | null;
-}
-
-export interface DataSource {
-  id: string;
-  name: string;
-  type: "dataset" | "connection";
 }
 
 interface SqlEditorState {

@@ -558,10 +558,14 @@ class TestToolSchemaValidity:
         register_tools(agent)
 
         def _find_empty_schemas(obj: Any, path: str = "") -> list[str]:
-            """Walk a JSON schema tree and collect paths to empty {} nodes."""
+            """Walk a JSON schema tree and collect paths to empty {} nodes.
+
+            Skips ``.properties`` because an empty properties dict is valid
+            JSON Schema for tools that take zero parameters.
+            """
             found: list[str] = []
             if isinstance(obj, dict):
-                if obj == {}:
+                if obj == {} and not path.endswith(".properties"):
                     found.append(path or "(root)")
                 else:
                     for k, v in obj.items():

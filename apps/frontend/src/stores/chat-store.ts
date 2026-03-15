@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Message, ConversationDetail } from "@/types/api";
+import type { Message, ConversationDetail, DataSource } from "@/types/api";
 import {
   createConversation,
   fetchConversationDetail,
@@ -29,6 +29,7 @@ interface ChatState {
   error: string | null;
   _restored: boolean;
   pendingMessage: string | null;
+  selectedSources: DataSource[];
 
   newConversation: () => Promise<string | null>;
   switchConversation: (conversationId: string) => Promise<void>;
@@ -37,6 +38,8 @@ interface ChatState {
   reset: () => void;
   restoreSession: () => Promise<void>;
   setPendingMessage: (message: string | null) => void;
+  toggleSource: (source: DataSource) => void;
+  clearSelectedSources: () => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -46,6 +49,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   error: null,
   _restored: false,
   pendingMessage: null,
+  selectedSources: [],
 
   newConversation: async () => {
     set({ status: "loading", error: null });
@@ -57,6 +61,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         messages: [],
         status: "idle",
         error: null,
+        selectedSources: [],
       });
       return conversation.id;
     } catch (err: unknown) {
@@ -75,6 +80,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: [],
       status: "loading",
       error: null,
+      selectedSources: [],
     });
 
     try {
@@ -84,6 +90,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({
         messages: detail.messages,
         status: "idle",
+        selectedSources: [],
       });
     } catch (err: unknown) {
       persistConversationId(null);
@@ -111,6 +118,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: [],
       status: "idle",
       error: null,
+      selectedSources: [],
     });
   },
 
@@ -125,4 +133,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setPendingMessage: (message: string | null) => set({ pendingMessage: message }),
+
+  toggleSource: (source: DataSource) =>
+    set((state) => {
+      const exists = state.selectedSources.some(
+        (s) => s.id === source.id && s.type === source.type,
+      );
+      return {
+        selectedSources: exists
+          ? state.selectedSources.filter(
+              (s) => !(s.id === source.id && s.type === source.type),
+            )
+          : [...state.selectedSources, source],
+      };
+    }),
+
+  clearSelectedSources: () => set({ selectedSources: [] }),
 }));

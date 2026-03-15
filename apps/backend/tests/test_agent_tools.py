@@ -784,15 +784,15 @@ class TestAgentToolChain:
 
 
 # ---------------------------------------------------------------------------
-# Test: All 9 tools registered
+# Test: All 10 tools registered
 # ---------------------------------------------------------------------------
 
 
 class TestToolRegistration:
-    """Verify all 9 tools are registered on the agent."""
+    """Verify all 10 tools are registered on the agent."""
 
-    def test_all_9_tools_registered(self):
-        """Agent has exactly 9 tools registered."""
+    def test_all_10_tools_registered(self):
+        """Agent has exactly 10 tools registered."""
         env = _test_env({"DATAX_OPENAI_API_KEY": "sk-test"})
         with patch.dict(os.environ, env, clear=True):
             from app.services.agent_service import create_agent
@@ -817,6 +817,7 @@ class TestToolRegistration:
                 "suggest_followups",
                 "create_bookmark",
                 "search_bookmarks",
+                "list_datasources",
             }
             assert tool_names == expected_tools, (
                 f"Expected tools: {expected_tools}, got: {tool_names}"

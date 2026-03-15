@@ -15,8 +15,10 @@ import {
   useCopilotBookmarkAction,
 } from "@/hooks/use-copilot-actions";
 import { useQueryProgressRender } from "@/hooks/use-query-progress";
+import { useCopilotSourceContext } from "@/hooks/use-copilot-source-context";
 
 export function CopilotActionsRegistrar() {
+  useCopilotSourceContext();
   useCopilotProfileAction();
   useCopilotTableAction();
   useCopilotChartAction();

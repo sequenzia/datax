@@ -7,6 +7,8 @@ import { ChatInput } from "@/components/chat/chat-input";
 import { MessageBubble } from "@/components/chat/message-bubble";
 import { useChatStore } from "@/stores/chat-store";
 import { useAiStatus } from "@/hooks/use-ai-status";
+import { useDatasetList } from "@/hooks/use-datasets";
+import { useConnectionList } from "@/hooks/use-connections";
 
 export function ChatPage() {
   const { conversationId: urlConversationId } = useParams<{
@@ -22,7 +24,13 @@ export function ChatPage() {
     switchConversation,
     restoreSession,
     pendingMessage,
+    selectedSources,
+    toggleSource,
+    clearSelectedSources,
   } = useChatStore();
+
+  const { data: datasets = [] } = useDatasetList();
+  const { data: connections = [] } = useConnectionList();
 
   const {
     messages: copilotMessages,
@@ -188,6 +196,11 @@ export function ChatPage() {
           disabled={isLoading || aiUnavailable}
           disabledMessage={chatDisabledMessage}
           initialValue={pendingMessage}
+          datasets={datasets}
+          connections={connections}
+          selectedSources={selectedSources}
+          onToggleSource={toggleSource}
+          onClearSources={clearSelectedSources}
         />
       </div>
     </div>

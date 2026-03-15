@@ -1,6 +1,8 @@
 import { useRef, useCallback, useEffect, type KeyboardEvent, type FormEvent } from "react";
 import { Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { DatasourceSelector, SelectedSourceChips } from "@/components/chat/datasource-selector";
+import type { Dataset, Connection, DataSource } from "@/types/api";
 
 interface ChatInputProps {
   onSend: (message: string) => void;
@@ -9,6 +11,11 @@ interface ChatInputProps {
   disabledMessage?: string | null;
   /** Optional initial value to pre-fill the input */
   initialValue?: string | null;
+  datasets?: Dataset[];
+  connections?: Connection[];
+  selectedSources?: DataSource[];
+  onToggleSource?: (source: DataSource) => void;
+  onClearSources?: () => void;
 }
 
 /**
@@ -20,6 +27,11 @@ export function ChatInput({
   disabled = false,
   disabledMessage = null,
   initialValue = null,
+  datasets = [],
+  connections = [],
+  selectedSources = [],
+  onToggleSource,
+  onClearSources,
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -77,11 +89,22 @@ export function ChatInput({
           {disabledMessage}
         </div>
       )}
+      <SelectedSourceChips selectedSources={selectedSources} onRemove={(s) => onToggleSource?.(s)} />
       <form
         onSubmit={handleSubmit}
         className="flex items-end gap-2 border-t border-border bg-background px-3 py-3"
         data-testid="chat-input-form"
       >
+        {onToggleSource && (
+          <DatasourceSelector
+            datasets={datasets}
+            connections={connections}
+            selectedSources={selectedSources}
+            onToggle={onToggleSource}
+            onClear={() => onClearSources?.()}
+            disabled={disabled}
+          />
+        )}
         <textarea
           ref={textareaRef}
           placeholder={disabled && disabledMessage ? disabledMessage : "Ask a question about your data..."}

@@ -1,6 +1,6 @@
 """Pydantic AI agent tool functions for the DataX analytics agent.
 
-Implements the 9 core agent tools that enable the AI to interact with
+Implements the 10 core agent tools that enable the AI to interact with
 data sources, generate visualizations, and manage bookmarks:
 
 1. run_query - Execute SQL via Virtual Data Layer (DuckDB or SQLAlchemy)
@@ -12,6 +12,7 @@ data sources, generate visualizations, and manage bookmarks:
 7. suggest_followups - Generate contextual follow-up suggestions
 8. create_bookmark - Save current result as a bookmark
 9. search_bookmarks - Search existing bookmarks
+10. list_datasources - List all available data sources
 
 Self-correction loop:
     The agent's built-in retry mechanism (via ``retries`` on the tool)
@@ -33,7 +34,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import ModelRetry
-from sqlalchemy import select
+from sqlalchemy import distinct, func, select
 from sqlalchemy.orm import Session
 
 from app.logging import get_logger
@@ -79,6 +80,9 @@ class AgentDeps:
     connection_manager: ConnectionManager | None = None
     query_service: QueryService | None = None
     session_factory: Any | None = None
+
+    # Datasource selection
+    selected_sources: list[dict[str, str]] = field(default_factory=list)
 
     # Configuration
     max_query_timeout: int = 30
@@ -209,13 +213,33 @@ class BookmarkSearchResult(BaseModel):
     bookmarks: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class DatasourceSummary(BaseModel):
+    """Summary of a single datasource for discovery."""
+
+    source_id: str
+    source_type: str  # "dataset" | "connection"
+    name: str
+    table_count: int = 0
+    total_rows: int | None = None  # datasets only
+    db_type: str | None = None  # file format or database type
+
+
+class DatasourceListResult(BaseModel):
+    """Result of a list_datasources tool call."""
+
+    stage: str = "datasources_listed"
+    progress_stage: str = PROGRESS_GENERATING_SQL
+    datasources: list[DatasourceSummary] = Field(default_factory=list)
+    total_count: int = 0
+
+
 # ---------------------------------------------------------------------------
 # Tool registration
 # ---------------------------------------------------------------------------
 
 
 def register_tools(agent: Agent[AgentDeps, str]) -> None:
-    """Register all 9 agent tools on the Pydantic AI agent.
+    """Register all 10 agent tools on the Pydantic AI agent.
 
     Each tool is decorated with ``@agent.tool`` and receives a
     ``RunContext[AgentDeps]`` as its first argument, giving access
@@ -757,6 +781,93 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
 
             return BookmarkSearchResult(
                 bookmarks=results,
+            ).model_dump()
+        finally:
+            session.close()
+
+    @agent.tool
+    async def list_datasources(
+        ctx: RunContext[AgentDeps],
+    ) -> dict[str, Any]:
+        """List all available data sources (datasets and connections).
+
+        Returns a lightweight summary of each source including name,
+        type, table count, and row count. Use this to discover what
+        data is available before querying.
+
+        Returns:
+            List of datasource summaries with source IDs and metadata.
+        """
+        deps = ctx.deps
+        _log_progress(PROGRESS_GENERATING_SQL, "list_datasources")
+
+        if deps.session_factory is None:
+            return {"stage": "datasources_error", "error": "Database session not available"}
+
+        session: Session = deps.session_factory()
+        try:
+            from app.models.orm import Connection as ConnModel
+            from app.models.orm import Dataset as DatasetModel
+
+            datasources: list[DatasourceSummary] = []
+
+            # Fetch ready datasets
+            ds_stmt = select(
+                DatasetModel.id,
+                DatasetModel.name,
+                DatasetModel.file_format,
+                DatasetModel.row_count,
+            ).where(DatasetModel.status == "ready")
+            for ds_id, ds_name, file_format, row_count in session.execute(ds_stmt).all():
+                table_count_stmt = (
+                    select(func.count(distinct(SchemaMetadata.table_name)))
+                    .where(
+                        SchemaMetadata.source_id == ds_id,
+                        SchemaMetadata.source_type == "dataset",
+                    )
+                )
+                table_count = session.execute(table_count_stmt).scalar() or 0
+
+                datasources.append(
+                    DatasourceSummary(
+                        source_id=str(ds_id),
+                        source_type="dataset",
+                        name=ds_name,
+                        table_count=table_count,
+                        total_rows=row_count,
+                        db_type=file_format,
+                    )
+                )
+
+            # Fetch connections
+            conn_stmt = select(
+                ConnModel.id,
+                ConnModel.name,
+                ConnModel.db_type,
+            )
+            for conn_id, conn_name, db_type in session.execute(conn_stmt).all():
+                table_count_stmt = (
+                    select(func.count(distinct(SchemaMetadata.table_name)))
+                    .where(
+                        SchemaMetadata.source_id == conn_id,
+                        SchemaMetadata.source_type == "connection",
+                    )
+                )
+                table_count = session.execute(table_count_stmt).scalar() or 0
+
+                datasources.append(
+                    DatasourceSummary(
+                        source_id=str(conn_id),
+                        source_type="connection",
+                        name=conn_name,
+                        table_count=table_count,
+                        db_type=db_type,
+                    )
+                )
+
+            return DatasourceListResult(
+                datasources=datasources,
+                total_count=len(datasources),
             ).model_dump()
         finally:
             session.close()

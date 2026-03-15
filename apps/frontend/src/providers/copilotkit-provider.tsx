@@ -1,6 +1,7 @@
 import { CopilotKit } from "@copilotkit/react-core";
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { CopilotActionsRegistrar } from "./copilot-actions-registrar";
+import { useChatStore } from "@/stores/chat-store";
 
 const RUNTIME_URL = "/api/agent";
 const AGENT_NAME = "datax-analytics";
@@ -26,8 +27,16 @@ class ActionsErrorBoundary extends Component<
 }
 
 export function CopilotKitProvider({ children }: { children: ReactNode }) {
+  const selectedSources = useChatStore((s) => s.selectedSources);
+
   return (
-    <CopilotKit runtimeUrl={RUNTIME_URL} agent={AGENT_NAME}>
+    <CopilotKit
+      runtimeUrl={RUNTIME_URL}
+      agent={AGENT_NAME}
+      properties={{
+        selectedSources: selectedSources.map((s) => ({ id: s.id, type: s.type })),
+      }}
+    >
       <ActionsErrorBoundary>
         <CopilotActionsRegistrar />
       </ActionsErrorBoundary>

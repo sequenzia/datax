@@ -11,7 +11,8 @@ Provider resolution order:
 
 Agent tools (registered via agent_tools.register_tools):
     run_query, get_schema, summarize_table, render_chart, render_table,
-    render_data_profile, suggest_followups, create_bookmark, search_bookmarks
+    render_data_profile, suggest_followups, create_bookmark, search_bookmarks,
+    list_datasources
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 from pydantic_ai.providers.openai import OpenAIProvider
@@ -35,10 +36,7 @@ from app.services.provider_service import (
     get_provider,
     list_providers,
 )
-from app.services.schema_context import (
-    build_schema_context,
-    inject_schema_into_prompt,
-)
+from app.services.schema_context import build_schema_context
 
 logger = get_logger(__name__)
 
@@ -92,6 +90,7 @@ query results. Chart type is auto-selected or overridable.
 - suggest_followups: Generate follow-up question suggestions.
 - create_bookmark: Save a result as a bookmark for later.
 - search_bookmarks: Search saved bookmarks by title or SQL.
+- list_datasources: List all available data sources with metadata.
 
 Workflow for answering data questions:
 1. Identify the relevant data source from the schema context.
@@ -110,6 +109,15 @@ INSERT, UPDATE, DELETE, DROP, or other write operations.
 - When results are ambiguous, ask clarifying questions.
 - Chart type heuristics: single numeric for KPIs, time series for line charts, \
 categories for bar charts, proportions for pie charts, two numerics for scatter plots.
+
+Datasource selection workflow:
+- If schema context is provided below, the user has pre-selected sources. \
+Use those schemas directly — do not call list_datasources.
+- If no schema context is provided, call list_datasources first to see \
+what data is available, then use get_schema on the relevant source \
+before generating SQL.
+- When multiple sources could answer a question, list the source names \
+and ask the user which one to use.
 
 Follow-up suggestion guidelines:
 - After presenting query results, use suggest_followups when you detect \
@@ -394,33 +402,33 @@ def create_agent(
         timeout=timeout,
     )
 
-    # Build the system prompt with optional schema context
-    system_prompt = ANALYTICS_SYSTEM_PROMPT
     if session is not None:
-        schema_result = build_schema_context(session)
-        system_prompt = inject_schema_into_prompt(
-            ANALYTICS_SYSTEM_PROMPT, schema_result.context_text
-        )
-        logger.info(
-            "schema_context_injected",
-            table_count=schema_result.table_count,
-            total_columns=schema_result.total_columns,
-            truncated=schema_result.truncated,
-            has_error=schema_result.error is not None,
-        )
+        logger.info("agent_create_session_available")
 
     agent: Agent[AgentDeps, str] = Agent(
         model,
-        instructions=system_prompt,
+        instructions=ANALYTICS_SYSTEM_PROMPT,
         deps_type=AgentDeps,
         retries=max_retries,
         model_settings={"timeout": timeout},
         name="datax-analytics",
     )
 
-    # Register all 9 agent tools (run_query, get_schema, summarize_table,
+    @agent.system_prompt
+    async def _dynamic_schema_context(ctx: RunContext[AgentDeps]) -> str:
+        if ctx.deps.schema_context:
+            return ctx.deps.schema_context
+        if not ctx.deps.selected_sources:
+            return (
+                "No data sources are pre-selected. "
+                "Use list_datasources to discover available sources, "
+                "then get_schema for the relevant source."
+            )
+        return ""
+
+    # Register all 10 agent tools (run_query, get_schema, summarize_table,
     # render_chart, render_table, render_data_profile, suggest_followups,
-    # create_bookmark, search_bookmarks)
+    # create_bookmark, search_bookmarks, list_datasources)
     register_tools(agent)
 
     logger.info(
@@ -428,7 +436,7 @@ def create_agent(
         provider=record.provider_name,
         model=record.model_name,
         provider_source=record.source,
-        tools_registered=9,
+        tools_registered=10,
     )
 
     return agent
@@ -445,6 +453,8 @@ def build_agent_deps(
     max_retries: int = 3,
     analysis_state: Any | None = None,
     conversation_id: str | None = None,
+    source_filter: list[dict[str, str]] | None = None,
+    selected_sources: list[dict[str, str]] | None = None,
 ) -> AgentDeps:
     """Build AgentDeps with schema context and service references.
 
@@ -466,11 +476,15 @@ def build_agent_deps(
         max_retries: Maximum retry attempts for self-correction.
         analysis_state: Optional AnalysisState for conversation context.
         conversation_id: Optional conversation UUID string.
+        source_filter: Optional list of source dicts to filter schema context.
+        selected_sources: Optional list of selected source dicts for the agent.
 
     Returns:
         An AgentDeps instance populated with schema context and service refs.
     """
-    schema_result = build_schema_context(session)
+    import uuid
+
+    schema_result = build_schema_context(session, source_filter=source_filter)
 
     # Collect available table names from the schema result
     available_tables: list[str] = []
@@ -482,6 +496,15 @@ def build_agent_deps(
         from app.models.orm import SchemaMetadata as SchemaM
 
         stmt = sa_select(distinct(SchemaM.table_name)).order_by(SchemaM.table_name)
+        if source_filter:
+            from sqlalchemy import or_ as sa_or
+
+            conditions = []
+            for sf in source_filter:
+                conditions.append(
+                    (SchemaM.source_id == uuid.UUID(sf["id"])) & (SchemaM.source_type == sf["type"])
+                )
+            stmt = stmt.where(sa_or(*conditions))
         available_tables = [
             row[0] for row in session.execute(stmt).all()
         ]
@@ -489,6 +512,7 @@ def build_agent_deps(
     return AgentDeps(
         schema_context=schema_result.context_text,
         available_tables=available_tables,
+        selected_sources=selected_sources or [],
         analysis_state=analysis_state,
         conversation_id=conversation_id,
         duckdb_manager=duckdb_manager,

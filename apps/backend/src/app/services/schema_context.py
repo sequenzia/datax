@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.logging import get_logger
@@ -189,13 +189,19 @@ class SchemaContextResult:
 # ---------------------------------------------------------------------------
 
 
-def build_schema_context(session: Session) -> SchemaContextResult:
+def build_schema_context(
+    session: Session,
+    source_filter: list[dict[str, str]] | None = None,
+) -> SchemaContextResult:
     """Query all SchemaMetadata and format as structured text for the AI agent.
 
     Parameters
     ----------
     session:
         An active SQLAlchemy session to query the database.
+    source_filter:
+        Optional list of ``{"id": "<uuid>", "type": "dataset"|"connection"}``
+        dicts to restrict which sources are included.
 
     Returns
     -------
@@ -204,7 +210,7 @@ def build_schema_context(session: Session) -> SchemaContextResult:
         On database query failure, returns empty context with an error message.
     """
     try:
-        return _build_context_from_db(session)
+        return _build_context_from_db(session, source_filter=source_filter)
     except Exception as exc:
         logger.error("schema_context_query_failed", error=str(exc))
         return SchemaContextResult(
@@ -213,7 +219,10 @@ def build_schema_context(session: Session) -> SchemaContextResult:
         )
 
 
-def _build_context_from_db(session: Session) -> SchemaContextResult:
+def _build_context_from_db(
+    session: Session,
+    source_filter: list[dict[str, str]] | None = None,
+) -> SchemaContextResult:
     """Internal implementation that queries the DB and builds the context."""
 
     # 1. Load all schema metadata rows
@@ -223,6 +232,16 @@ def _build_context_from_db(session: Session) -> SchemaContextResult:
         SchemaMetadata.table_name,
         SchemaMetadata.column_name,
     )
+
+    if source_filter:
+        conditions = []
+        for sf in source_filter:
+            conditions.append(
+                (SchemaMetadata.source_id == UUID(sf["id"]))
+                & (SchemaMetadata.source_type == sf["type"])
+            )
+        stmt = stmt.where(or_(*conditions))
+
     schema_rows = list(session.execute(stmt).scalars().all())
 
     if not schema_rows:

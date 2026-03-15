@@ -18,7 +18,7 @@ CopilotKit v1.54+ also wraps AG-UI payloads in a nested envelope format::
 The ``_unwrap_envelope`` helper detects this format and replaces the cached
 request JSON so that pydantic-ai sees the flat ``RunAgentInput`` fields.
 
-The agent is configured with all 9 tools (run_query, get_schema, etc.)
+The agent is configured with all 10 tools (run_query, get_schema, etc.)
 and receives service references (DuckDB, QueryService) via AgentDeps.
 """
 
@@ -93,6 +93,35 @@ def _ensure_run_defaults(body: dict[str, Any], request: Request) -> dict[str, An
         request._json = body  # type: ignore[attr-defined]
         logger.debug("agui_run_defaults_applied", fields=applied)
     return body
+
+
+def _extract_selected_sources(body: dict[str, Any]) -> list[dict[str, str]]:
+    """Extract selected data sources from CopilotKit forwardedProps.
+
+    Expects ``forwardedProps.selectedSources`` as a list of
+    ``{"id": "<uuid>", "type": "dataset"|"connection"}`` dicts.
+    Returns an empty list if not present or malformed.
+    """
+    forwarded = body.get("forwardedProps", {})
+    if not isinstance(forwarded, dict):
+        return []
+    raw_sources = forwarded.get("selectedSources", [])
+    if not isinstance(raw_sources, list):
+        return []
+
+    valid_types = {"dataset", "connection"}
+    result: list[dict[str, str]] = []
+    for entry in raw_sources:
+        if (
+            isinstance(entry, dict)
+            and isinstance(entry.get("id"), str)
+            and entry.get("type") in valid_types
+        ):
+            result.append({"id": entry["id"], "type": entry["type"]})
+
+    if result:
+        logger.debug("agui_selected_sources", count=len(result))
+    return result
 
 
 def _build_cors_middleware(cors_origins: list[str]) -> Middleware:
@@ -184,16 +213,6 @@ def create_agui_app(
             middleware=[cors_middleware],
         )
 
-    # Build AgentDeps with service references so tools can access data sources
-    deps = AgentDeps(
-        duckdb_manager=duckdb_manager,
-        connection_manager=connection_manager,
-        query_service=query_service,
-        session_factory=session_factory,
-        max_query_timeout=max_query_timeout,
-        max_retries=max_retries,
-    )
-
     agent_name = agent.name or "datax-analytics"
     agent_info_response = {
         "agents": {
@@ -214,7 +233,37 @@ def create_agui_app(
             return JSONResponse(agent_info_response)
         body = _unwrap_envelope(body, request)
         _ensure_run_defaults(body, request)
-        return await handle_ag_ui_request(agent, request, deps=deps)
+
+        # Build per-request deps with filtered schema context
+        selected_sources = _extract_selected_sources(body)
+
+        if session_factory and selected_sources:
+            from app.services.agent_service import build_agent_deps
+
+            with session_factory() as db:
+                request_deps = build_agent_deps(
+                    db,
+                    duckdb_manager=duckdb_manager,
+                    connection_manager=connection_manager,
+                    query_service=query_service,
+                    session_factory=session_factory,
+                    max_query_timeout=max_query_timeout,
+                    max_retries=max_retries,
+                    source_filter=selected_sources,
+                )
+                request_deps.selected_sources = selected_sources
+        else:
+            request_deps = AgentDeps(
+                duckdb_manager=duckdb_manager,
+                connection_manager=connection_manager,
+                query_service=query_service,
+                session_factory=session_factory,
+                max_query_timeout=max_query_timeout,
+                max_retries=max_retries,
+                selected_sources=selected_sources,
+            )
+
+        return await handle_ag_ui_request(agent, request, deps=request_deps)
 
     agui_app = Starlette(
         routes=[
@@ -225,5 +274,5 @@ def create_agui_app(
         middleware=[cors_middleware],
     )
 
-    logger.info("agui_app_created", agent_name=agent_name, tools_registered=9)
+    logger.info("agui_app_created", agent_name=agent_name, tools_registered=10)
     return agui_app
