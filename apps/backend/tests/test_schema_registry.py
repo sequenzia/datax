@@ -22,12 +22,13 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.api.v1 import connections as connections_module
 from app.config import Settings
+from app.encryption import encrypt_value
 from app.main import create_app
 from app.models.base import Base
+from app.models.connection import ConnectionStatus
 from app.models.dataset import DatasetStatus
-from app.models.orm import Dataset, SchemaMetadata
+from app.models.orm import Connection, Dataset, SchemaMetadata
 from app.services.duckdb_manager import DuckDBManager
 
 
@@ -50,9 +51,19 @@ def _test_settings(db_path: Path) -> Settings:
     env = {
         "DATABASE_URL": f"sqlite:///{db_path}",
         "DATAX_ENCRYPTION_KEY": "test-encryption-key",
+        "DATAX_DUCKDB_PATH": ":memory:",
     }
     with patch.dict(os.environ, env, clear=True):
         return Settings()  # type: ignore[call-arg]
+
+
+@pytest.fixture
+def fernet_env():
+    """Provide env with valid encryption key for encrypt_value calls."""
+    from cryptography.fernet import Fernet
+
+    key = Fernet.generate_key().decode()
+    return patch.dict(os.environ, {"DATAX_ENCRYPTION_KEY": key}, clear=False)
 
 
 @pytest.fixture
@@ -112,16 +123,6 @@ def db(session_factory) -> Session:
     session.close()
 
 
-@pytest.fixture(autouse=True)
-def _clear_connection_store():
-    """Clear in-memory connection store between tests."""
-    connections_module._connections.clear()
-    connections_module._schema_metadata.clear()
-    yield
-    connections_module._connections.clear()
-    connections_module._schema_metadata.clear()
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -140,7 +141,6 @@ def _create_dataset(
         name=name,
         file_path="/tmp/fake.csv",
         file_format="csv",
-        file_size_bytes=1024,
         row_count=100,
         duckdb_table_name=tname,
         status=status,
@@ -174,51 +174,40 @@ def _add_schema_metadata(
 
 
 def _add_connection(
+    db: Session,
+    fernet_env,
     conn_id: uuid.UUID | None = None,
     name: str = "Test Connection",
-    status: str = "connected",
+    status: str = ConnectionStatus.CONNECTED.value,
 ) -> uuid.UUID:
-    """Add a connection to the in-memory store."""
+    """Add a connection to the database."""
     cid = conn_id or uuid.uuid4()
-    connections_module._connections[cid] = {
-        "id": cid,
-        "name": name,
-        "db_type": "postgresql",
-        "host": "localhost",
-        "port": 5432,
-        "database_name": "testdb",
-        "username": "user",
-        "encrypted_password": b"encrypted",
-        "status": status,
-        "last_tested_at": "2026-01-01T00:00:00+00:00",
-        "created_at": "2026-01-01T00:00:00+00:00",
-        "updated_at": "2026-01-01T00:00:00+00:00",
-    }
+    with fernet_env:
+        encrypted_pw = encrypt_value("test_password")
+    conn = Connection(
+        id=cid,
+        name=name,
+        db_type="postgresql",
+        host="localhost",
+        port=5432,
+        database_name="testdb",
+        username="user",
+        encrypted_password=encrypted_pw,
+        status=status,
+    )
+    db.add(conn)
+    db.flush()
     return cid
 
 
 def _add_connection_schema(
+    db: Session,
     conn_id: uuid.UUID,
     table_name: str,
     columns: list[dict],
 ) -> None:
-    """Add schema metadata for a connection to the in-memory store."""
-    if conn_id not in connections_module._schema_metadata:
-        connections_module._schema_metadata[conn_id] = []
-    for col in columns:
-        connections_module._schema_metadata[conn_id].append(
-            {
-                "id": uuid.uuid4(),
-                "source_id": conn_id,
-                "source_type": "connection",
-                "table_name": table_name,
-                "column_name": col["name"],
-                "data_type": col["type"],
-                "is_nullable": col.get("nullable", True),
-                "is_primary_key": col.get("is_primary_key", False),
-                "foreign_key_ref": col.get("foreign_key_ref"),
-            }
-        )
+    """Add schema metadata for a connection to the database."""
+    _add_schema_metadata(db, conn_id, "connection", table_name, columns)
 
 
 # ---------------------------------------------------------------------------
@@ -342,10 +331,11 @@ class TestSchemaRegistryConnections:
     """Test schema registry returns connection sources correctly."""
 
     @pytest.mark.asyncio
-    async def test_returns_connection_with_schema(self, client) -> None:
+    async def test_returns_connection_with_schema(self, client, db, fernet_env) -> None:
         """Connection with schema metadata appears in the response."""
-        conn_id = _add_connection(name="Production DB")
+        conn_id = _add_connection(db, fernet_env, name="Production DB")
         _add_connection_schema(
+            db,
             conn_id,
             "users",
             [
@@ -353,6 +343,7 @@ class TestSchemaRegistryConnections:
                 {"name": "email", "type": "varchar", "nullable": False},
             ],
         )
+        db.commit()
 
         response = await client.get("/api/v1/schema")
 
@@ -370,19 +361,22 @@ class TestSchemaRegistryConnections:
         assert len(table["columns"]) == 2
 
     @pytest.mark.asyncio
-    async def test_connection_with_multiple_tables(self, client) -> None:
+    async def test_connection_with_multiple_tables(self, client, db, fernet_env) -> None:
         """Connection with multiple tables returns all tables grouped."""
-        conn_id = _add_connection(name="Analytics DB")
+        conn_id = _add_connection(db, fernet_env, name="Analytics DB")
         _add_connection_schema(
+            db,
             conn_id,
             "events",
             [{"name": "id", "type": "bigint"}],
         )
         _add_connection_schema(
+            db,
             conn_id,
             "sessions",
             [{"name": "session_id", "type": "uuid"}],
         )
+        db.commit()
 
         response = await client.get("/api/v1/schema")
         data = response.json()
@@ -403,11 +397,11 @@ class TestSchemaRegistryOrdering:
     """Test sources are ordered by name."""
 
     @pytest.mark.asyncio
-    async def test_sources_ordered_by_name(self, client, db) -> None:
+    async def test_sources_ordered_by_name(self, client, db, fernet_env) -> None:
         """Sources are returned sorted alphabetically by name."""
         _create_dataset(db, name="Zebra Data", table_name="zebra")
         _create_dataset(db, name="Alpha Data", table_name="alpha")
-        _add_connection(name="Middle Connection")
+        _add_connection(db, fernet_env, name="Middle Connection")
         db.commit()
 
         response = await client.get("/api/v1/schema")
@@ -417,12 +411,13 @@ class TestSchemaRegistryOrdering:
         assert names == sorted(names, key=str.lower)
 
     @pytest.mark.asyncio
-    async def test_tables_sorted_by_name(self, client) -> None:
+    async def test_tables_sorted_by_name(self, client, db, fernet_env) -> None:
         """Tables within a source are sorted alphabetically."""
-        conn_id = _add_connection(name="Test DB")
-        _add_connection_schema(conn_id, "zebra_table", [{"name": "id", "type": "integer"}])
-        _add_connection_schema(conn_id, "alpha_table", [{"name": "id", "type": "integer"}])
-        _add_connection_schema(conn_id, "middle_table", [{"name": "id", "type": "integer"}])
+        conn_id = _add_connection(db, fernet_env, name="Test DB")
+        _add_connection_schema(db, conn_id, "zebra_table", [{"name": "id", "type": "integer"}])
+        _add_connection_schema(db, conn_id, "alpha_table", [{"name": "id", "type": "integer"}])
+        _add_connection_schema(db, conn_id, "middle_table", [{"name": "id", "type": "integer"}])
+        db.commit()
 
         response = await client.get("/api/v1/schema")
         data = response.json()
@@ -454,9 +449,10 @@ class TestSchemaRegistryEmptySources:
         assert source["tables"] == []
 
     @pytest.mark.asyncio
-    async def test_connection_without_schema_included(self, client) -> None:
+    async def test_connection_without_schema_included(self, client, db, fernet_env) -> None:
         """Connection with no schema metadata appears with empty tables list."""
-        _add_connection(name="No Tables Connection")
+        _add_connection(db, fernet_env, name="No Tables Connection")
+        db.commit()
 
         response = await client.get("/api/v1/schema")
         data = response.json()
@@ -485,7 +481,7 @@ class TestSchemaRegistryEdgeCases:
         assert data["sources"] == []
 
     @pytest.mark.asyncio
-    async def test_mixed_datasets_and_connections(self, client, db) -> None:
+    async def test_mixed_datasets_and_connections(self, client, db, fernet_env) -> None:
         """Both datasets and connections appear in the unified response."""
         ds = _create_dataset(db, name="CSV Upload", table_name="csv_data")
         _add_schema_metadata(
@@ -495,14 +491,15 @@ class TestSchemaRegistryEdgeCases:
             table_name="csv_data",
             columns=[{"name": "value", "type": "float"}],
         )
-        db.commit()
 
-        conn_id = _add_connection(name="Live DB")
+        conn_id = _add_connection(db, fernet_env, name="Live DB")
         _add_connection_schema(
+            db,
             conn_id,
             "metrics",
             [{"name": "metric_name", "type": "varchar"}],
         )
+        db.commit()
 
         response = await client.get("/api/v1/schema")
         data = response.json()
@@ -512,14 +509,16 @@ class TestSchemaRegistryEdgeCases:
         assert types == {"dataset", "connection"}
 
     @pytest.mark.asyncio
-    async def test_error_state_connection_shows_cached_schema(self, client) -> None:
+    async def test_error_state_connection_shows_cached_schema(self, client, db, fernet_env) -> None:
         """Connection in error state still returns its cached schema metadata."""
-        conn_id = _add_connection(name="Broken DB", status="error")
+        conn_id = _add_connection(db, fernet_env, name="Broken DB", status="error")
         _add_connection_schema(
+            db,
             conn_id,
             "cached_table",
             [{"name": "id", "type": "integer", "nullable": False}],
         )
+        db.commit()
 
         response = await client.get("/api/v1/schema")
         data = response.json()

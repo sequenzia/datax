@@ -12,17 +12,22 @@ Covers:
 from __future__ import annotations
 
 import os
+import tempfile
 import uuid
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import create_engine, event, select
+from sqlalchemy.orm import Session, sessionmaker
 
-from app.api.v1 import connections as connections_module
 from app.config import Settings
 from app.encryption import decrypt_value
 from app.main import create_app
+from app.models.base import Base
+from app.models.orm import Connection, SchemaMetadata
 from app.services.connection_manager import (
     ConnectionManager,
     ConnectionTestResult,
@@ -34,24 +39,22 @@ from app.services.schema_introspection import ColumnInfo
 TEST_FERNET_KEY = Fernet.generate_key().decode()
 
 
-def _test_settings() -> Settings:
+def _test_settings(db_path: Path) -> Settings:
     """Create test settings with required fields (SQLite for tests)."""
     env = {
-        "DATABASE_URL": "sqlite:///",
+        "DATABASE_URL": f"sqlite:///{db_path}",
         "DATAX_ENCRYPTION_KEY": TEST_FERNET_KEY,
+        "DATAX_DUCKDB_PATH": ":memory:",
     }
     with patch.dict(os.environ, env, clear=True):
         return Settings()  # type: ignore[call-arg]
 
 
-@pytest.fixture(autouse=True)
-def _clear_connection_store():
-    """Clear in-memory connection store between tests."""
-    connections_module._connections.clear()
-    connections_module._schema_metadata.clear()
-    yield
-    connections_module._connections.clear()
-    connections_module._schema_metadata.clear()
+@pytest.fixture
+def db_path():
+    """Create a temporary file for SQLite database."""
+    with tempfile.TemporaryDirectory() as d:
+        yield Path(d) / "test.db"
 
 
 @pytest.fixture
@@ -89,10 +92,43 @@ def mock_introspect_success():
 
 
 @pytest.fixture
-def app(fernet_env, mock_test_success, mock_introspect_success):
-    """Create a FastAPI app with mocked connection manager."""
+def db_engine(db_path):
+    """Create a SQLite engine backed by a temp file with foreign key support."""
+    url = f"sqlite:///{db_path}"
+    engine = create_engine(url, connect_args={"check_same_thread": False})
+
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    Base.metadata.create_all(engine)
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture
+def session_factory(db_engine):
+    """Create a sessionmaker bound to the test engine."""
+    return sessionmaker(bind=db_engine, autocommit=False, autoflush=False)
+
+
+@pytest.fixture
+def db(session_factory) -> Session:
+    """Create a database session for test setup/teardown."""
+    session = session_factory()
+    yield session
+    session.close()
+
+
+@pytest.fixture
+def app(db_path, db_engine, session_factory, fernet_env, mock_test_success, mock_introspect_success):
+    """Create a FastAPI app with mocked connection manager and real DB."""
     with fernet_env, mock_test_success, mock_introspect_success:
-        application = create_app(settings=_test_settings())
+        application = create_app(settings=_test_settings(db_path))
+        application.state.db_engine = db_engine
+        application.state.session_factory = session_factory
         yield application
 
 
@@ -300,19 +336,57 @@ class TestDeleteConnection:
         assert response.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_delete_removes_schema_metadata(self, client) -> None:
-        """Deleting a connection removes associated schema metadata."""
-        create_resp = await client.post("/api/v1/connections", json=_valid_pg_body())
-        conn_id = create_resp.json()["id"]
-        conn_uuid = uuid.UUID(conn_id)
+    async def test_delete_removes_schema_metadata(self, db_path, db_engine, session_factory, fernet_env) -> None:
+        """Deleting a connection removes associated schema metadata from DB."""
+        columns = [
+            ColumnInfo(
+                table_name="users",
+                column_name="id",
+                data_type="integer",
+                raw_type="INTEGER",
+                is_nullable=False,
+                is_primary_key=True,
+            ),
+        ]
+        mock_test = patch.object(
+            ConnectionManager,
+            "test_connection",
+            return_value=ConnectionTestResult(success=True),
+        )
+        mock_introspect = patch.object(
+            ConnectionManager,
+            "introspect_schema",
+            return_value=IntrospectionResult(success=True, columns=columns, table_count=1),
+        )
+        with fernet_env, mock_test, mock_introspect:
+            app = create_app(settings=_test_settings(db_path))
+            app.state.db_engine = db_engine
+            app.state.session_factory = session_factory
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+                create_resp = await client.post("/api/v1/connections", json=_valid_pg_body())
+                conn_id = create_resp.json()["id"]
+                conn_uuid = uuid.UUID(conn_id)
 
-        # Manually add schema metadata for this connection
-        connections_module._schema_metadata[conn_uuid] = [{"column": "test"}]
-        assert conn_uuid in connections_module._schema_metadata
+                # Verify schema metadata was created
+                with session_factory() as session:
+                    count = len(
+                        session.execute(
+                            select(SchemaMetadata).where(SchemaMetadata.source_id == conn_uuid)
+                        ).scalars().all()
+                    )
+                    assert count > 0
 
-        await client.delete(f"/api/v1/connections/{conn_id}")
+                await client.delete(f"/api/v1/connections/{conn_id}")
 
-        assert conn_uuid not in connections_module._schema_metadata
+                # Verify schema metadata was removed
+                with session_factory() as session:
+                    count = len(
+                        session.execute(
+                            select(SchemaMetadata).where(SchemaMetadata.source_id == conn_uuid)
+                        ).scalars().all()
+                    )
+                    assert count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -324,45 +398,48 @@ class TestPasswordEncryption:
     """Test that passwords are encrypted at rest and can be round-tripped."""
 
     @pytest.mark.asyncio
-    async def test_password_encrypted_in_store(self, client, fernet_env) -> None:
-        """Password stored in the internal store is encrypted bytes, not plaintext."""
+    async def test_password_encrypted_in_store(self, client, db, fernet_env) -> None:
+        """Password stored in the database is encrypted bytes, not plaintext."""
         with fernet_env:
             body = _valid_pg_body()
             await client.post("/api/v1/connections", json=body)
 
-            # Get the stored record
-            stored = list(connections_module._connections.values())[0]
-            encrypted_pw = stored["encrypted_password"]
-
-            assert isinstance(encrypted_pw, bytes)
-            assert encrypted_pw != body["password"].encode()
+            # Query the stored record directly from DB
+            db.expire_all()
+            conn = db.execute(select(Connection)).scalars().first()
+            assert conn is not None
+            assert isinstance(conn.encrypted_password, bytes)
+            assert conn.encrypted_password != body["password"].encode()
 
     @pytest.mark.asyncio
-    async def test_password_decrypts_to_original(self, client, fernet_env) -> None:
+    async def test_password_decrypts_to_original(self, client, db, fernet_env) -> None:
         """Encrypted password decrypts back to the original plaintext."""
         with fernet_env:
             body = _valid_pg_body()
             await client.post("/api/v1/connections", json=body)
 
-            stored = list(connections_module._connections.values())[0]
-            decrypted = decrypt_value(stored["encrypted_password"])
+            db.expire_all()
+            conn = db.execute(select(Connection)).scalars().first()
+            assert conn is not None
+            decrypted = decrypt_value(conn.encrypted_password)
             assert decrypted == body["password"]
 
     @pytest.mark.asyncio
-    async def test_updated_password_encrypted(self, client, fernet_env) -> None:
+    async def test_updated_password_encrypted(self, client, db, fernet_env) -> None:
         """Updated password is also encrypted in the store."""
         with fernet_env:
             create_resp = await client.post("/api/v1/connections", json=_valid_pg_body())
             conn_id = create_resp.json()["id"]
-            conn_uuid = uuid.UUID(conn_id)
 
             await client.put(
                 f"/api/v1/connections/{conn_id}",
                 json={"password": "new_password_789"},
             )
 
-            stored = connections_module._connections[conn_uuid]
-            decrypted = decrypt_value(stored["encrypted_password"])
+            db.expire_all()
+            conn = db.get(Connection, uuid.UUID(conn_id))
+            assert conn is not None
+            decrypted = decrypt_value(conn.encrypted_password)
             assert decrypted == "new_password_789"
 
 
@@ -503,7 +580,7 @@ class TestErrorHandling:
     """Error handling tests for connection endpoints."""
 
     @pytest.mark.asyncio
-    async def test_authentication_failure_returns_400(self, fernet_env) -> None:
+    async def test_authentication_failure_returns_400(self, db_path, db_engine, session_factory, fernet_env) -> None:
         """Authentication failure returns 400 with clear error."""
         with fernet_env, patch.object(
             ConnectionManager,
@@ -514,7 +591,9 @@ class TestErrorHandling:
                 error_type="authentication_failure",
             ),
         ):
-            app = create_app(settings=_test_settings())
+            app = create_app(settings=_test_settings(db_path))
+            app.state.db_engine = db_engine
+            app.state.session_factory = session_factory
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.post("/api/v1/connections", json=_valid_pg_body())
@@ -523,7 +602,7 @@ class TestErrorHandling:
         assert "authentication" in response.json()["error"]["message"].lower()
 
     @pytest.mark.asyncio
-    async def test_connection_timeout_returns_408(self, fernet_env) -> None:
+    async def test_connection_timeout_returns_408(self, db_path, db_engine, session_factory, fernet_env) -> None:
         """Connection timeout returns 408 with troubleshooting tips."""
         with fernet_env, patch.object(
             ConnectionManager,
@@ -534,7 +613,9 @@ class TestErrorHandling:
                 error_type="connection_timeout",
             ),
         ):
-            app = create_app(settings=_test_settings())
+            app = create_app(settings=_test_settings(db_path))
+            app.state.db_engine = db_engine
+            app.state.session_factory = session_factory
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.post("/api/v1/connections", json=_valid_pg_body())
@@ -545,7 +626,7 @@ class TestErrorHandling:
         assert "troubleshooting" in error_msg.lower()
 
     @pytest.mark.asyncio
-    async def test_connection_error_returns_400(self, fernet_env) -> None:
+    async def test_connection_error_returns_400(self, db_path, db_engine, session_factory, fernet_env) -> None:
         """Generic connection error returns 400 with suggestion."""
         with fernet_env, patch.object(
             ConnectionManager,
@@ -556,7 +637,9 @@ class TestErrorHandling:
                 error_type="connection_error",
             ),
         ):
-            app = create_app(settings=_test_settings())
+            app = create_app(settings=_test_settings(db_path))
+            app.state.db_engine = db_engine
+            app.state.session_factory = session_factory
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.post("/api/v1/connections", json=_valid_pg_body())
@@ -644,11 +727,22 @@ class TestConnectionManagerUnit:
 # ---------------------------------------------------------------------------
 
 
+def _make_app_with_mocks(db_path, db_engine, session_factory, fernet_env, mock_test, mock_introspect):
+    """Helper to create an app with specific mocks and DB fixtures."""
+    with fernet_env, mock_test, mock_introspect:
+        app = create_app(settings=_test_settings(db_path))
+        app.state.db_engine = db_engine
+        app.state.session_factory = session_factory
+        return app
+
+
 class TestConnectionTestEndpoint:
     """Test POST /api/v1/connections/{id}/test endpoint."""
 
     @pytest.mark.asyncio
-    async def test_successful_test_returns_connected_with_latency(self, fernet_env) -> None:
+    async def test_successful_test_returns_connected_with_latency(
+        self, db_path, db_engine, session_factory, fernet_env
+    ) -> None:
         """Successful test returns status 'connected' with latency_ms and tables_found."""
         mock_create = patch.object(
             ConnectionManager,
@@ -666,7 +760,9 @@ class TestConnectionTestEndpoint:
             return_value=IntrospectionResult(success=True, columns=[]),
         )
         with fernet_env, mock_create, mock_introspect:
-            app = create_app(settings=_test_settings())
+            app = create_app(settings=_test_settings(db_path))
+            app.state.db_engine = db_engine
+            app.state.session_factory = session_factory
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
                 # Create a connection first
@@ -683,7 +779,7 @@ class TestConnectionTestEndpoint:
         assert data["tables_found"] == 23
 
     @pytest.mark.asyncio
-    async def test_status_updated_after_test(self, fernet_env) -> None:
+    async def test_status_updated_after_test(self, db_path, db_engine, session_factory, fernet_env) -> None:
         """Connection status is updated to 'connected' after successful test."""
         mock_create = patch.object(
             ConnectionManager,
@@ -699,7 +795,9 @@ class TestConnectionTestEndpoint:
             return_value=IntrospectionResult(success=True, columns=[]),
         )
         with fernet_env, mock_create, mock_introspect:
-            app = create_app(settings=_test_settings())
+            app = create_app(settings=_test_settings(db_path))
+            app.state.db_engine = db_engine
+            app.state.session_factory = session_factory
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
                 create_resp = await client.post("/api/v1/connections", json=_valid_pg_body())
@@ -713,7 +811,7 @@ class TestConnectionTestEndpoint:
                 assert conn["status"] == "connected"
 
     @pytest.mark.asyncio
-    async def test_last_tested_at_updated(self, fernet_env) -> None:
+    async def test_last_tested_at_updated(self, db_path, db_engine, session_factory, fernet_env) -> None:
         """last_tested_at is updated after testing."""
         mock_create = patch.object(
             ConnectionManager,
@@ -729,7 +827,9 @@ class TestConnectionTestEndpoint:
             return_value=IntrospectionResult(success=True, columns=[]),
         )
         with fernet_env, mock_create, mock_introspect:
-            app = create_app(settings=_test_settings())
+            app = create_app(settings=_test_settings(db_path))
+            app.state.db_engine = db_engine
+            app.state.session_factory = session_factory
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
                 create_resp = await client.post("/api/v1/connections", json=_valid_pg_body())
@@ -752,7 +852,7 @@ class TestConnectionTestEndpoint:
         assert response.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_timeout_returns_error_status(self, fernet_env) -> None:
+    async def test_timeout_returns_error_status(self, db_path, db_engine, session_factory, fernet_env) -> None:
         """Connection timeout returns error status in response body."""
         mock_create = patch.object(
             ConnectionManager,
@@ -772,7 +872,9 @@ class TestConnectionTestEndpoint:
             return_value=IntrospectionResult(success=True, columns=[]),
         )
         with fernet_env, mock_create, mock_introspect:
-            app = create_app(settings=_test_settings())
+            app = create_app(settings=_test_settings(db_path))
+            app.state.db_engine = db_engine
+            app.state.session_factory = session_factory
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
                 create_resp = await client.post("/api/v1/connections", json=_valid_pg_body())
@@ -786,7 +888,7 @@ class TestConnectionTestEndpoint:
         assert data["error"] is not None
 
     @pytest.mark.asyncio
-    async def test_auth_failure_returns_error_status(self, fernet_env) -> None:
+    async def test_auth_failure_returns_error_status(self, db_path, db_engine, session_factory, fernet_env) -> None:
         """Authentication failure returns error status in response body."""
         mock_create = patch.object(
             ConnectionManager,
@@ -806,7 +908,9 @@ class TestConnectionTestEndpoint:
             return_value=IntrospectionResult(success=True, columns=[]),
         )
         with fernet_env, mock_create, mock_introspect:
-            app = create_app(settings=_test_settings())
+            app = create_app(settings=_test_settings(db_path))
+            app.state.db_engine = db_engine
+            app.state.session_factory = session_factory
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
                 create_resp = await client.post("/api/v1/connections", json=_valid_pg_body())
@@ -819,7 +923,7 @@ class TestConnectionTestEndpoint:
         assert data["status"] == "error"
 
     @pytest.mark.asyncio
-    async def test_status_set_to_error_on_failure(self, fernet_env) -> None:
+    async def test_status_set_to_error_on_failure(self, db_path, db_engine, session_factory, fernet_env) -> None:
         """Connection status is set to 'error' after failed test."""
         mock_create = patch.object(
             ConnectionManager,
@@ -839,7 +943,9 @@ class TestConnectionTestEndpoint:
             return_value=IntrospectionResult(success=True, columns=[]),
         )
         with fernet_env, mock_create, mock_introspect:
-            app = create_app(settings=_test_settings())
+            app = create_app(settings=_test_settings(db_path))
+            app.state.db_engine = db_engine
+            app.state.session_factory = session_factory
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
                 create_resp = await client.post("/api/v1/connections", json=_valid_pg_body())
@@ -852,7 +958,7 @@ class TestConnectionTestEndpoint:
                 assert conn["status"] == "error"
 
     @pytest.mark.asyncio
-    async def test_zero_tables_still_connected(self, fernet_env) -> None:
+    async def test_zero_tables_still_connected(self, db_path, db_engine, session_factory, fernet_env) -> None:
         """Database with no tables still returns 'connected' status."""
         mock_create = patch.object(
             ConnectionManager,
@@ -868,7 +974,9 @@ class TestConnectionTestEndpoint:
             return_value=IntrospectionResult(success=True, columns=[]),
         )
         with fernet_env, mock_create, mock_introspect:
-            app = create_app(settings=_test_settings())
+            app = create_app(settings=_test_settings(db_path))
+            app.state.db_engine = db_engine
+            app.state.session_factory = session_factory
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
                 create_resp = await client.post("/api/v1/connections", json=_valid_pg_body())
@@ -882,7 +990,7 @@ class TestConnectionTestEndpoint:
         assert data["tables_found"] == 0
 
     @pytest.mark.asyncio
-    async def test_rapid_successive_tests(self, fernet_env) -> None:
+    async def test_rapid_successive_tests(self, db_path, db_engine, session_factory, fernet_env) -> None:
         """Rapid successive tests work without errors."""
         mock_create = patch.object(
             ConnectionManager,
@@ -900,7 +1008,9 @@ class TestConnectionTestEndpoint:
             return_value=IntrospectionResult(success=True, columns=[]),
         )
         with fernet_env, mock_create, mock_introspect:
-            app = create_app(settings=_test_settings())
+            app = create_app(settings=_test_settings(db_path))
+            app.state.db_engine = db_engine
+            app.state.session_factory = session_factory
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
                 create_resp = await client.post("/api/v1/connections", json=_valid_pg_body())
@@ -912,7 +1022,7 @@ class TestConnectionTestEndpoint:
                     assert resp.json()["status"] == "connected"
 
     @pytest.mark.asyncio
-    async def test_decrypt_failure_returns_400(self, fernet_env) -> None:
+    async def test_decrypt_failure_returns_400(self, db_path, db_engine, session_factory, fernet_env) -> None:
         """Undecryptable password returns 400 prompting re-entry."""
         from app.encryption import EncryptionError
 
@@ -927,15 +1037,13 @@ class TestConnectionTestEndpoint:
             return_value=IntrospectionResult(success=True, columns=[]),
         )
         with fernet_env, mock_create_test, mock_introspect:
-            app = create_app(settings=_test_settings())
+            app = create_app(settings=_test_settings(db_path))
+            app.state.db_engine = db_engine
+            app.state.session_factory = session_factory
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
                 create_resp = await client.post("/api/v1/connections", json=_valid_pg_body())
                 conn_id = create_resp.json()["id"]
-
-                # Corrupt the encrypted password in the store
-                conn_uuid = uuid.UUID(conn_id)
-                connections_module._connections[conn_uuid]["encrypted_password"] = b"corrupted"
 
                 with patch(
                     "app.api.v1.connections.decrypt_value",
@@ -948,7 +1056,7 @@ class TestConnectionTestEndpoint:
         assert "credentials" in msg.lower() or "decrypt" in msg.lower()
 
     @pytest.mark.asyncio
-    async def test_works_for_mysql_connection(self, fernet_env) -> None:
+    async def test_works_for_mysql_connection(self, db_path, db_engine, session_factory, fernet_env) -> None:
         """Test endpoint works for MySQL connections too."""
         mock_create = patch.object(
             ConnectionManager,
@@ -964,7 +1072,9 @@ class TestConnectionTestEndpoint:
             return_value=IntrospectionResult(success=True, columns=[]),
         )
         with fernet_env, mock_create, mock_introspect:
-            app = create_app(settings=_test_settings())
+            app = create_app(settings=_test_settings(db_path))
+            app.state.db_engine = db_engine
+            app.state.session_factory = session_factory
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
                 create_resp = await client.post("/api/v1/connections", json=_valid_mysql_body())
@@ -1045,7 +1155,7 @@ class TestRefreshSchema:
     """Test POST /api/v1/connections/{id}/refresh-schema endpoint."""
 
     @pytest.mark.asyncio
-    async def test_refresh_replaces_existing_schema(self, fernet_env) -> None:
+    async def test_refresh_replaces_existing_schema(self, db_path, db_engine, session_factory, fernet_env) -> None:
         """Refresh replaces existing schema with fresh introspection data."""
         columns = _sample_columns()
         mock_test = patch.object(
@@ -1063,18 +1173,15 @@ class TestRefreshSchema:
             ),
         )
         with fernet_env, mock_test, mock_introspect:
-            app = create_app(settings=_test_settings())
+            app = create_app(settings=_test_settings(db_path))
+            app.state.db_engine = db_engine
+            app.state.session_factory = session_factory
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
                 # Create a connection
                 create_resp = await client.post("/api/v1/connections", json=_valid_pg_body())
                 conn_id = create_resp.json()["id"]
                 conn_uuid = uuid.UUID(conn_id)
-
-                # Add some old schema metadata
-                connections_module._schema_metadata[conn_uuid] = [
-                    {"old": "data"},
-                ]
 
                 # Refresh schema
                 response = await client.post(
@@ -1088,13 +1195,16 @@ class TestRefreshSchema:
         assert data["columns_updated"] == 3
         assert data["refreshed_at"] is not None
 
-        # Old schema metadata should be replaced
-        new_schema = connections_module._schema_metadata[conn_uuid]
-        assert len(new_schema) == 3
-        assert all(entry["source_type"] == "connection" for entry in new_schema)
+        # Verify schema metadata in DB
+        with session_factory() as session:
+            schema_rows = session.execute(
+                select(SchemaMetadata).where(SchemaMetadata.source_id == conn_uuid)
+            ).scalars().all()
+            assert len(schema_rows) == 3
+            assert all(row.source_type == "connection" for row in schema_rows)
 
     @pytest.mark.asyncio
-    async def test_refresh_accurate_table_count(self, fernet_env) -> None:
+    async def test_refresh_accurate_table_count(self, db_path, db_engine, session_factory, fernet_env) -> None:
         """Table count reflects unique tables from introspection."""
         columns = [
             ColumnInfo(
@@ -1129,7 +1239,9 @@ class TestRefreshSchema:
             ),
         )
         with fernet_env, mock_test, mock_introspect:
-            app = create_app(settings=_test_settings())
+            app = create_app(settings=_test_settings(db_path))
+            app.state.db_engine = db_engine
+            app.state.session_factory = session_factory
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
                 create_resp = await client.post("/api/v1/connections", json=_valid_pg_body())
@@ -1144,7 +1256,9 @@ class TestRefreshSchema:
         assert data["columns_updated"] == 2
 
     @pytest.mark.asyncio
-    async def test_refresh_schema_unchanged_restores_same_data(self, fernet_env) -> None:
+    async def test_refresh_schema_unchanged_restores_same_data(
+        self, db_path, db_engine, session_factory, fernet_env
+    ) -> None:
         """When schema hasn't changed, refresh re-stores the same data."""
         columns = _sample_columns()
         mock_test = patch.object(
@@ -1162,7 +1276,9 @@ class TestRefreshSchema:
             ),
         )
         with fernet_env, mock_test, mock_introspect:
-            app = create_app(settings=_test_settings())
+            app = create_app(settings=_test_settings(db_path))
+            app.state.db_engine = db_engine
+            app.state.session_factory = session_factory
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
                 create_resp = await client.post("/api/v1/connections", json=_valid_pg_body())
@@ -1181,11 +1297,19 @@ class TestRefreshSchema:
         assert resp2.status_code == 200
         assert resp1.json()["tables_found"] == resp2.json()["tables_found"]
         assert resp1.json()["columns_updated"] == resp2.json()["columns_updated"]
-        # Schema metadata count should be the same
-        assert len(connections_module._schema_metadata[conn_uuid]) == 3
+
+        with session_factory() as session:
+            count = len(
+                session.execute(
+                    select(SchemaMetadata).where(SchemaMetadata.source_id == conn_uuid)
+                ).scalars().all()
+            )
+            assert count == 3
 
     @pytest.mark.asyncio
-    async def test_refresh_dropped_table_metadata_removed(self, fernet_env) -> None:
+    async def test_refresh_dropped_table_metadata_removed(
+        self, db_path, db_engine, session_factory, fernet_env
+    ) -> None:
         """When a table is dropped, its metadata is removed on refresh."""
         initial_columns = _sample_columns()  # users + orders
         after_drop = [col for col in initial_columns if col.table_name == "users"]
@@ -1216,7 +1340,9 @@ class TestRefreshSchema:
             side_effect=introspect_side_effect,
         )
         with fernet_env, mock_test, mock_introspect:
-            app = create_app(settings=_test_settings())
+            app = create_app(settings=_test_settings(db_path))
+            app.state.db_engine = db_engine
+            app.state.session_factory = session_factory
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
                 create_resp = await client.post("/api/v1/connections", json=_valid_pg_body())
@@ -1228,7 +1354,6 @@ class TestRefreshSchema:
                     f"/api/v1/connections/{conn_id}/refresh-schema"
                 )
                 assert resp1.json()["tables_found"] == 2
-                assert len(connections_module._schema_metadata[conn_uuid]) == 3
 
                 # Second refresh: orders table dropped
                 resp2 = await client.post(
@@ -1238,9 +1363,13 @@ class TestRefreshSchema:
         assert resp2.status_code == 200
         assert resp2.json()["tables_found"] == 1
         assert resp2.json()["columns_updated"] == 2
+
         # No orders table metadata should remain
-        remaining = connections_module._schema_metadata[conn_uuid]
-        assert all(entry["table_name"] == "users" for entry in remaining)
+        with session_factory() as session:
+            remaining = session.execute(
+                select(SchemaMetadata).where(SchemaMetadata.source_id == conn_uuid)
+            ).scalars().all()
+            assert all(row.table_name == "users" for row in remaining)
 
     @pytest.mark.asyncio
     async def test_refresh_not_found_returns_404(self, client) -> None:
@@ -1251,7 +1380,7 @@ class TestRefreshSchema:
 
     @pytest.mark.asyncio
     async def test_refresh_unreachable_preserves_existing_schema(
-        self, fernet_env
+        self, db_path, db_engine, session_factory, fernet_env
     ) -> None:
         """When database is unreachable, existing schema is preserved."""
         columns = _sample_columns()
@@ -1281,7 +1410,9 @@ class TestRefreshSchema:
             ),
         )
         with fernet_env, mock_test, mock_introspect:
-            app = create_app(settings=_test_settings())
+            app = create_app(settings=_test_settings(db_path))
+            app.state.db_engine = db_engine
+            app.state.session_factory = session_factory
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
                 # Create connection (uses first test_connection call)
@@ -1290,9 +1421,15 @@ class TestRefreshSchema:
                 conn_uuid = uuid.UUID(conn_id)
 
                 # Schema was stored during creation
-                existing_schema = connections_module._schema_metadata.get(conn_uuid)
-                assert existing_schema is not None
-                original_count = len(existing_schema)
+                with session_factory() as session:
+                    original_count = len(
+                        session.execute(
+                            select(SchemaMetadata).where(
+                                SchemaMetadata.source_id == conn_uuid
+                            )
+                        ).scalars().all()
+                    )
+                    assert original_count > 0
 
                 # Refresh with unreachable database
                 response = await client.post(
@@ -1300,13 +1437,18 @@ class TestRefreshSchema:
                 )
 
         assert response.status_code == 502
+
         # Existing schema should be preserved
-        preserved = connections_module._schema_metadata.get(conn_uuid)
-        assert preserved is not None
-        assert len(preserved) == original_count
+        with session_factory() as session:
+            preserved_count = len(
+                session.execute(
+                    select(SchemaMetadata).where(SchemaMetadata.source_id == conn_uuid)
+                ).scalars().all()
+            )
+            assert preserved_count == original_count
 
     @pytest.mark.asyncio
-    async def test_refresh_response_format(self, fernet_env) -> None:
+    async def test_refresh_response_format(self, db_path, db_engine, session_factory, fernet_env) -> None:
         """Response contains all required fields with correct types."""
         columns = _sample_columns()
         mock_test = patch.object(
@@ -1322,7 +1464,9 @@ class TestRefreshSchema:
             ),
         )
         with fernet_env, mock_test, mock_introspect:
-            app = create_app(settings=_test_settings())
+            app = create_app(settings=_test_settings(db_path))
+            app.state.db_engine = db_engine
+            app.state.session_factory = session_factory
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
                 create_resp = await client.post("/api/v1/connections", json=_valid_pg_body())

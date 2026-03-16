@@ -13,10 +13,12 @@ from app.api.health import router as health_router
 from app.api.v1.router import router as v1_router
 from app.config import Settings, get_settings
 from app.database import create_db_engine, create_session_factory
+from app.encryption import decrypt_value
 from app.errors import register_exception_handlers
 from app.logging import get_logger, setup_logging
+from app.models.connection import ConnectionStatus
 from app.models.dataset import DatasetStatus
-from app.models.orm import Dataset
+from app.models.orm import Connection, Dataset
 from app.services.connection_manager import ConnectionManager
 from app.services.duckdb_manager import DuckDBManager
 from app.shutdown import ShutdownManager
@@ -90,6 +92,74 @@ def _rehydrate_duckdb_views(
     )
 
 
+def _rehydrate_connection_pools(
+    session_factory: sessionmaker[Session],
+    conn_mgr: ConnectionManager,
+) -> None:
+    """Re-create connection engine pools for all persisted connections.
+
+    Connection records survive in PostgreSQL, but the ConnectionManager's
+    in-memory engine pools are lost on restart. This function decrypts
+    stored credentials and warms up each pool so connections are immediately
+    usable after a restart.
+    """
+    logger = get_logger(__name__)
+
+    with session_factory() as session:
+        connections = (
+            session.execute(
+                select(Connection).where(
+                    Connection.status == ConnectionStatus.CONNECTED
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        registered = 0
+        errors = 0
+
+        for conn in connections:
+            try:
+                password = decrypt_value(conn.encrypted_password)
+                test_result = conn_mgr.test_connection(
+                    connection_id=conn.id,
+                    db_type=conn.db_type,
+                    host=conn.host,
+                    port=conn.port,
+                    database_name=conn.database_name,
+                    username=conn.username,
+                    password=password,
+                )
+                if test_result.success:
+                    registered += 1
+                else:
+                    conn.status = ConnectionStatus.ERROR.value
+                    errors += 1
+                    logger.warning(
+                        "rehydrate_connection_failed",
+                        connection_id=str(conn.id),
+                        error=test_result.error_message,
+                    )
+            except Exception:
+                conn.status = ConnectionStatus.ERROR.value
+                errors += 1
+                logger.warning(
+                    "rehydrate_connection_error",
+                    connection_id=str(conn.id),
+                    exc_info=True,
+                )
+
+        session.commit()
+
+    logger.info(
+        "connection_rehydration_complete",
+        registered=registered,
+        errors=errors,
+        total=len(connections),
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup and shutdown logic."""
@@ -129,6 +199,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
     except Exception:
         logger.error("duckdb_rehydration_failed", exc_info=True)
+
+    # Re-establish connection pools for persisted database connections.
+    try:
+        _rehydrate_connection_pools(
+            session_factory=app.state.session_factory,
+            conn_mgr=app.state.connection_manager,
+        )
+    except Exception:
+        logger.error("connection_rehydration_failed", exc_info=True)
 
     yield
 

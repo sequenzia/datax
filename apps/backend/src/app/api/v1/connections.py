@@ -2,21 +2,24 @@
 
 Provides endpoints for managing external database connections with
 encrypted credential storage, connection testing, and schema introspection.
+All connection data is persisted to PostgreSQL via the Connection ORM model.
 """
 
 from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
+from sqlalchemy import delete, select
+from sqlalchemy.orm import Session
 
-from app.dependencies import get_connection_manager
+from app.dependencies import get_connection_manager, get_db
 from app.encryption import EncryptionError, decrypt_value, encrypt_value
 from app.logging import get_logger
 from app.models.connection import ConnectionStatus, DatabaseType
+from app.models.orm import Connection, SchemaMetadata
 from app.services.connection_manager import ConnectionManager
 
 logger = get_logger(__name__)
@@ -98,50 +101,68 @@ class SchemaRefreshResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# In-memory storage (temporary until PostgreSQL session is wired up)
+# Helpers
 # ---------------------------------------------------------------------------
 
-# Stores connection records keyed by UUID.
-# Each record is a dict with all fields except the raw password.
-_connections: dict[uuid.UUID, dict[str, Any]] = {}
+
+def _now() -> datetime:
+    """Return current UTC datetime."""
+    return datetime.now(UTC)
 
 
-def _now_iso() -> str:
-    """Return current UTC time as ISO 8601 string."""
-    return datetime.now(UTC).isoformat()
-
-
-def _connection_to_response(record: dict[str, Any]) -> ConnectionResponse:
-    """Convert an internal connection record to a response schema."""
+def _connection_to_response(conn: Connection) -> ConnectionResponse:
+    """Convert a Connection ORM instance to a response schema."""
     return ConnectionResponse(
-        id=str(record["id"]),
-        name=record["name"],
-        db_type=record["db_type"],
-        host=record["host"],
-        port=record["port"],
-        database_name=record["database_name"],
-        username=record["username"],
-        status=record["status"],
-        last_tested_at=record.get("last_tested_at"),
-        created_at=record["created_at"],
-        updated_at=record["updated_at"],
+        id=str(conn.id),
+        name=conn.name,
+        db_type=conn.db_type,
+        host=conn.host,
+        port=conn.port,
+        database_name=conn.database_name,
+        username=conn.username,
+        status=conn.status,
+        last_tested_at=conn.last_tested_at.isoformat() if conn.last_tested_at else None,
+        created_at=conn.created_at.isoformat(),
+        updated_at=conn.updated_at.isoformat(),
     )
 
 
-def _get_connection_or_404(connection_id: uuid.UUID) -> dict[str, Any]:
+def _get_connection_or_404(db: Session, connection_id: uuid.UUID) -> Connection:
     """Retrieve a connection record or raise 404."""
-    record = _connections.get(connection_id)
-    if record is None:
+    conn = db.get(Connection, connection_id)
+    if conn is None:
         raise HTTPException(status_code=404, detail=f"Connection {connection_id} not found")
-    return record
+    return conn
 
 
-# ---------------------------------------------------------------------------
-# Schema metadata storage (temporary until PostgreSQL session is wired up)
-# ---------------------------------------------------------------------------
+def _save_schema_metadata(
+    db: Session,
+    connection_id: uuid.UUID,
+    columns: list,
+) -> None:
+    """Replace schema metadata for a connection with fresh introspection results."""
+    # Delete existing schema metadata for this connection
+    db.execute(
+        delete(SchemaMetadata).where(
+            SchemaMetadata.source_id == connection_id,
+            SchemaMetadata.source_type == "connection",
+        )
+    )
 
-# Stores schema metadata keyed by source_id (connection UUID).
-_schema_metadata: dict[uuid.UUID, list[dict[str, Any]]] = {}
+    # Insert new schema metadata
+    for col in columns:
+        db.add(
+            SchemaMetadata(
+                source_id=connection_id,
+                source_type="connection",
+                table_name=col.table_name,
+                column_name=col.column_name,
+                data_type=col.data_type,
+                is_nullable=col.is_nullable,
+                is_primary_key=col.is_primary_key,
+                foreign_key_ref=col.foreign_key_ref,
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +173,7 @@ _schema_metadata: dict[uuid.UUID, list[dict[str, Any]]] = {}
 @router.post("", status_code=201)
 async def create_connection(
     body: ConnectionCreateRequest,
+    db: Session = Depends(get_db),
     conn_mgr: ConnectionManager = Depends(get_connection_manager),
 ) -> ConnectionResponse:
     """Create a new database connection.
@@ -167,7 +189,7 @@ async def create_connection(
         )
 
     connection_id = uuid.uuid4()
-    now = _now_iso()
+    now = _now()
 
     # Encrypt the password
     encrypted_password = encrypt_value(body.password)
@@ -208,47 +230,32 @@ async def create_connection(
                 "Please verify your connection parameters and try again.",
             )
 
-    # Connection succeeded - store it
-    status = ConnectionStatus.CONNECTED.value
-
-    record: dict[str, Any] = {
-        "id": connection_id,
-        "name": body.name,
-        "db_type": body.db_type,
-        "host": body.host,
-        "port": body.port,
-        "database_name": body.database_name,
-        "username": body.username,
-        "encrypted_password": encrypted_password,
-        "status": status,
-        "last_tested_at": now,
-        "created_at": now,
-        "updated_at": now,
-    }
-    _connections[connection_id] = record
+    # Connection succeeded - persist it
+    conn = Connection(
+        id=connection_id,
+        name=body.name,
+        db_type=body.db_type,
+        host=body.host,
+        port=body.port,
+        database_name=body.database_name,
+        username=body.username,
+        encrypted_password=encrypted_password,
+        status=ConnectionStatus.CONNECTED.value,
+        last_tested_at=now,
+    )
+    db.add(conn)
 
     # Auto-introspect schema
     intro_result = conn_mgr.introspect_schema(connection_id)
     if intro_result.success:
-        _schema_metadata[connection_id] = [
-            {
-                "id": uuid.uuid4(),
-                "source_id": connection_id,
-                "source_type": "connection",
-                "table_name": col.table_name,
-                "column_name": col.column_name,
-                "data_type": col.data_type,
-                "is_nullable": col.is_nullable,
-                "is_primary_key": col.is_primary_key,
-                "foreign_key_ref": col.foreign_key_ref,
-            }
-            for col in intro_result.columns
-        ]
+        _save_schema_metadata(db, connection_id, intro_result.columns)
         logger.info(
             "connection_schema_introspected",
             connection_id=str(connection_id),
             column_count=len(intro_result.columns),
         )
+
+    db.flush()
 
     logger.info(
         "connection_created",
@@ -257,24 +264,30 @@ async def create_connection(
         db_type=body.db_type,
     )
 
-    return _connection_to_response(record)
+    return _connection_to_response(conn)
 
 
 @router.get("")
-async def list_connections() -> ConnectionListResponse:
+async def list_connections(
+    db: Session = Depends(get_db),
+) -> ConnectionListResponse:
     """List all database connections.
 
     Returns connection metadata with status for each connection.
     Passwords are never included in the response.
     """
-    connections = [_connection_to_response(r) for r in _connections.values()]
-    return ConnectionListResponse(connections=connections)
+    stmt = select(Connection).order_by(Connection.name)
+    connections = list(db.execute(stmt).scalars().all())
+    return ConnectionListResponse(
+        connections=[_connection_to_response(c) for c in connections]
+    )
 
 
 @router.put("/{connection_id}")
 async def update_connection(
     connection_id: uuid.UUID,
     body: ConnectionUpdateRequest,
+    db: Session = Depends(get_db),
     conn_mgr: ConnectionManager = Depends(get_connection_manager),
 ) -> ConnectionResponse:
     """Update an existing database connection.
@@ -282,73 +295,59 @@ async def update_connection(
     Re-tests the connection and re-introspects the schema after update.
     Encrypts new password if provided.
     """
-    record = _get_connection_or_404(connection_id)
+    conn = _get_connection_or_404(db, connection_id)
 
     # Apply updates
     if body.name is not None:
-        record["name"] = body.name
+        conn.name = body.name
     if body.db_type is not None:
         if body.db_type not in SUPPORTED_DB_TYPES:
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid db_type '{body.db_type}'. Supported types: {SUPPORTED_DB_TYPES}",
             )
-        record["db_type"] = body.db_type
+        conn.db_type = body.db_type
     if body.host is not None:
-        record["host"] = body.host
+        conn.host = body.host
     if body.port is not None:
-        record["port"] = body.port
+        conn.port = body.port
     if body.database_name is not None:
-        record["database_name"] = body.database_name
+        conn.database_name = body.database_name
     if body.username is not None:
-        record["username"] = body.username
+        conn.username = body.username
     if body.password is not None:
-        record["encrypted_password"] = encrypt_value(body.password)
+        conn.encrypted_password = encrypt_value(body.password)
 
     # Decrypt password for connection test
     password = (
         body.password
         if body.password is not None
-        else decrypt_value(record["encrypted_password"])
+        else decrypt_value(conn.encrypted_password)
     )
 
     # Re-test connection
     test_result = conn_mgr.test_connection(
         connection_id=connection_id,
-        db_type=record["db_type"],
-        host=record["host"],
-        port=record["port"],
-        database_name=record["database_name"],
-        username=record["username"],
+        db_type=conn.db_type,
+        host=conn.host,
+        port=conn.port,
+        database_name=conn.database_name,
+        username=conn.username,
         password=password,
     )
 
-    now = _now_iso()
-    record["last_tested_at"] = now
-    record["updated_at"] = now
+    now = _now()
+    conn.last_tested_at = now
 
     if test_result.success:
-        record["status"] = ConnectionStatus.CONNECTED.value
+        conn.status = ConnectionStatus.CONNECTED.value
 
         # Re-introspect schema
         intro_result = conn_mgr.introspect_schema(connection_id)
         if intro_result.success:
-            _schema_metadata[connection_id] = [
-                {
-                    "id": uuid.uuid4(),
-                    "source_id": connection_id,
-                    "source_type": "connection",
-                    "table_name": col.table_name,
-                    "column_name": col.column_name,
-                    "data_type": col.data_type,
-                    "is_nullable": col.is_nullable,
-                    "is_primary_key": col.is_primary_key,
-                    "foreign_key_ref": col.foreign_key_ref,
-                }
-                for col in intro_result.columns
-            ]
+            _save_schema_metadata(db, connection_id, intro_result.columns)
     else:
-        record["status"] = ConnectionStatus.ERROR.value
+        conn.status = ConnectionStatus.ERROR.value
 
         if test_result.error_type == "authentication_failure":
             raise HTTPException(
@@ -373,34 +372,42 @@ async def update_connection(
                 "Please verify your connection parameters and try again.",
             )
 
+    db.flush()
+
     logger.info(
         "connection_updated",
         connection_id=str(connection_id),
-        status=record["status"],
+        status=conn.status,
     )
 
-    return _connection_to_response(record)
+    return _connection_to_response(conn)
 
 
 @router.delete("/{connection_id}", status_code=204)
 async def delete_connection(
     connection_id: uuid.UUID,
+    db: Session = Depends(get_db),
     conn_mgr: ConnectionManager = Depends(get_connection_manager),
 ) -> Response:
     """Delete a database connection.
 
     Removes associated schema metadata and closes the connection pool.
     """
-    _get_connection_or_404(connection_id)
+    conn = _get_connection_or_404(db, connection_id)
 
-    # Remove schema metadata
-    _schema_metadata.pop(connection_id, None)
+    # Remove schema metadata (no FK cascade since polymorphic design)
+    db.execute(
+        delete(SchemaMetadata).where(
+            SchemaMetadata.source_id == connection_id,
+            SchemaMetadata.source_type == "connection",
+        )
+    )
 
     # Close connection pool
     conn_mgr.remove_pool(connection_id)
 
     # Remove connection record
-    del _connections[connection_id]
+    db.delete(conn)
 
     logger.info("connection_deleted", connection_id=str(connection_id))
 
@@ -474,6 +481,7 @@ async def test_connection_params(
 @router.post("/{connection_id}/test")
 async def test_connection(
     connection_id: uuid.UUID,
+    db: Session = Depends(get_db),
     conn_mgr: ConnectionManager = Depends(get_connection_manager),
 ) -> ConnectionTestResponse:
     """Test an existing database connection.
@@ -482,16 +490,15 @@ async def test_connection(
     round-trip latency, counts tables, and updates the connection's
     status and last_tested_at timestamp.
     """
-    record = _get_connection_or_404(connection_id)
+    conn = _get_connection_or_404(db, connection_id)
 
     # Decrypt stored password
     try:
-        password = decrypt_value(record["encrypted_password"])
+        password = decrypt_value(conn.encrypted_password)
     except EncryptionError:
-        now = _now_iso()
-        record["status"] = ConnectionStatus.ERROR.value
-        record["updated_at"] = now
-        record["last_tested_at"] = now
+        now = _now()
+        conn.status = ConnectionStatus.ERROR.value
+        conn.last_tested_at = now
 
         logger.warning(
             "connection_test_decrypt_failed",
@@ -506,21 +513,20 @@ async def test_connection(
     # Run the connection test with latency measurement
     test_result = conn_mgr.test_connection(
         connection_id=connection_id,
-        db_type=record["db_type"],
-        host=record["host"],
-        port=record["port"],
-        database_name=record["database_name"],
-        username=record["username"],
+        db_type=conn.db_type,
+        host=conn.host,
+        port=conn.port,
+        database_name=conn.database_name,
+        username=conn.username,
         password=password,
         measure_latency=True,
     )
 
-    now = _now_iso()
-    record["last_tested_at"] = now
-    record["updated_at"] = now
+    now = _now()
+    conn.last_tested_at = now
 
     if test_result.success:
-        record["status"] = ConnectionStatus.CONNECTED.value
+        conn.status = ConnectionStatus.CONNECTED.value
 
         logger.info(
             "connection_test_passed",
@@ -536,7 +542,7 @@ async def test_connection(
         )
 
     # Connection failed
-    record["status"] = ConnectionStatus.ERROR.value
+    conn.status = ConnectionStatus.ERROR.value
 
     logger.warning(
         "connection_test_endpoint_failed",
@@ -553,6 +559,7 @@ async def test_connection(
 @router.post("/{connection_id}/refresh-schema")
 async def refresh_schema(
     connection_id: uuid.UUID,
+    db: Session = Depends(get_db),
     conn_mgr: ConnectionManager = Depends(get_connection_manager),
 ) -> SchemaRefreshResponse:
     """Refresh schema metadata for an existing connection.
@@ -560,11 +567,11 @@ async def refresh_schema(
     Deletes existing SchemaMetadata and re-introspects the database.
     If the database is unreachable, the existing schema is preserved.
     """
-    record = _get_connection_or_404(connection_id)
+    conn = _get_connection_or_404(db, connection_id)
 
     # Decrypt stored password
     try:
-        password = decrypt_value(record["encrypted_password"])
+        password = decrypt_value(conn.encrypted_password)
     except EncryptionError:
         raise HTTPException(
             status_code=400,
@@ -575,11 +582,11 @@ async def refresh_schema(
     # Ensure the engine is available by testing the connection
     test_result = conn_mgr.test_connection(
         connection_id=connection_id,
-        db_type=record["db_type"],
-        host=record["host"],
-        port=record["port"],
-        database_name=record["database_name"],
-        username=record["username"],
+        db_type=conn.db_type,
+        host=conn.host,
+        port=conn.port,
+        database_name=conn.database_name,
+        username=conn.username,
         password=password,
     )
 
@@ -612,24 +619,11 @@ async def refresh_schema(
         )
 
     # Replace existing schema metadata with fresh introspection
-    now = _now_iso()
+    now = _now()
     tables_found = len({col.table_name for col in intro_result.columns})
     columns_updated = len(intro_result.columns)
 
-    _schema_metadata[connection_id] = [
-        {
-            "id": uuid.uuid4(),
-            "source_id": connection_id,
-            "source_type": "connection",
-            "table_name": col.table_name,
-            "column_name": col.column_name,
-            "data_type": col.data_type,
-            "is_nullable": col.is_nullable,
-            "is_primary_key": col.is_primary_key,
-            "foreign_key_ref": col.foreign_key_ref,
-        }
-        for col in intro_result.columns
-    ]
+    _save_schema_metadata(db, connection_id, intro_result.columns)
 
     logger.info(
         "schema_refreshed",
@@ -642,5 +636,5 @@ async def refresh_schema(
         source_id=str(connection_id),
         tables_found=tables_found,
         columns_updated=columns_updated,
-        refreshed_at=now,
+        refreshed_at=now.isoformat(),
     )

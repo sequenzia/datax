@@ -76,7 +76,7 @@ class Dataset(TimestampMixin, Base):
     )
 
 
-class Connection(CreatedAtMixin, Base):
+class Connection(TimestampMixin, Base):
     """External database connection credentials."""
 
     __tablename__ = "connections"
@@ -92,6 +92,12 @@ class Connection(CreatedAtMixin, Base):
     database_name: Mapped[str] = mapped_column(String(255), nullable=False)
     username: Mapped[str] = mapped_column(String(255), nullable=False)
     encrypted_password: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="disconnected"
+    )
+    last_tested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class SchemaMetadata(CreatedAtMixin, Base):
