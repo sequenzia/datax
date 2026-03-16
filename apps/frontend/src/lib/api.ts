@@ -317,7 +317,16 @@ export function fetchConversationDetail(
 
 export function saveMessage(
   conversationId: string,
-  body: { role: "user" | "assistant"; content: string },
+  body: {
+    role: "user" | "assistant";
+    content: string;
+    sql?: string;
+    chart_config?: Record<string, unknown>;
+    query_result_summary?: Record<string, unknown>;
+    source_id?: string;
+    source_type?: string;
+    execution_time_ms?: number;
+  },
 ): Promise<Message> {
   return apiMutate<Message>(`/conversations/${conversationId}/messages`, {
     method: "POST",

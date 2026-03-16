@@ -152,6 +152,18 @@ def list_conversations(
     }
 
 
+def _build_message_metadata(m: Message) -> dict | None:
+    """Build metadata dict from structured Message columns."""
+    meta: dict = {}
+    if m.sql:
+        meta["sql"] = m.sql
+    if m.chart_config:
+        meta["chart_config"] = m.chart_config
+    if m.query_result_summary:
+        meta["query_result"] = m.query_result_summary
+    return meta if meta else None
+
+
 @router.get("/{conversation_id}")
 def get_conversation(conversation_id: UUID, db: Session = Depends(get_db)) -> dict:
     """Get a conversation with its full message history in chronological order."""
@@ -177,7 +189,7 @@ def get_conversation(conversation_id: UUID, db: Session = Depends(get_db)) -> di
                 "id": str(m.id),
                 "role": m.role,
                 "content": m.content,
-                "metadata": None,
+                "metadata": _build_message_metadata(m),
                 "created_at": m.created_at.isoformat() if m.created_at else None,
             }
             for m in conversation.messages
@@ -190,6 +202,12 @@ class CreateMessageRequest(BaseModel):
 
     role: str = Field(..., pattern="^(user|assistant)$")
     content: str = Field(..., min_length=1)
+    sql: str | None = Field(default=None)
+    chart_config: dict | None = Field(default=None)
+    query_result_summary: dict | None = Field(default=None)
+    source_id: str | None = Field(default=None)
+    source_type: str | None = Field(default=None)
+    execution_time_ms: float | None = Field(default=None)
 
 
 @router.post("/{conversation_id}/messages", status_code=201)
@@ -207,7 +225,17 @@ def create_message(
             status_code=404,
         )
 
-    message = Message(conversation_id=conversation_id, role=body.role, content=body.content)
+    message = Message(
+        conversation_id=conversation_id,
+        role=body.role,
+        content=body.content,
+        sql=body.sql,
+        chart_config=body.chart_config,
+        query_result_summary=body.query_result_summary,
+        source_id=body.source_id,
+        source_type=body.source_type,
+        execution_time_ms=body.execution_time_ms,
+    )
     db.add(message)
     db.flush()
 
@@ -222,7 +250,7 @@ def create_message(
         "id": str(message.id),
         "role": message.role,
         "content": message.content,
-        "metadata": None,
+        "metadata": _build_message_metadata(message),
         "created_at": message.created_at.isoformat() if message.created_at else None,
     }
 

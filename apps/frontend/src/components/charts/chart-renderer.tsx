@@ -245,6 +245,17 @@ function KpiCard({
   );
 }
 
+/** Extract a string title from Plotly's layout.title, which can be a string or {text, font} object. */
+export function extractLayoutTitle(title: unknown, fallback: string = "chart"): string {
+  if (typeof title === "string") return title;
+  if (title && typeof title === "object" && "text" in title) {
+    return typeof (title as { text: unknown }).text === "string"
+      ? (title as { text: string }).text
+      : fallback;
+  }
+  return fallback;
+}
+
 /** Renders a Plotly chart or KPI card from an AI-generated config. */
 export function ChartRenderer({
   chartConfig,
@@ -353,7 +364,7 @@ function PlotlyChart({
     return plotDiv as HTMLElement | null;
   }, []);
 
-  const chartTitle = (chartConfig.layout?.title as string) ?? "chart";
+  const chartTitle = extractLayoutTitle(chartConfig.layout?.title);
   const sanitizedTitle = chartTitle.replace(/[^a-zA-Z0-9]/g, "_");
 
   const handleExportPng = useCallback(async () => {

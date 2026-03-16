@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Maximize2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { ChartRenderer, type ChartConfig } from "@/components/charts";
+import { ChartRenderer, extractLayoutTitle, type ChartConfig } from "@/components/charts";
 import { useTheme } from "@/hooks/use-theme";
 import {
   Dialog,
@@ -57,7 +57,7 @@ export function InlineChartBlock({ chartConfig, className }: InlineChartBlockPro
         <DialogContent className="max-w-4xl max-h-[85vh]">
           <DialogHeader>
             <DialogTitle>
-              {(chartConfig.layout?.title as string) ?? "Chart"}
+              {extractLayoutTitle(chartConfig.layout?.title, "Chart")}
             </DialogTitle>
           </DialogHeader>
           <div className="h-[500px]">

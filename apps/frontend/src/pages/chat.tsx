@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useMemo } from "react";
+import { useEffect, useRef, useCallback, useMemo, isValidElement, Fragment } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { MessageSquare, AlertCircle, Loader2 } from "lucide-react";
 import { useCopilotChatInternal } from "@copilotkit/react-core";
@@ -7,9 +7,17 @@ import { ChatInput } from "@/components/chat/chat-input";
 import { MessageBubble } from "@/components/chat/message-bubble";
 import { useChatStore } from "@/stores/chat-store";
 import { saveMessage } from "@/lib/api";
+import { getPendingToolData } from "@/hooks/use-copilot-actions";
 import { useAiStatus } from "@/hooks/use-ai-status";
 import { useDatasetList } from "@/hooks/use-datasets";
 import { useConnectionList } from "@/hooks/use-connections";
+
+/** Returns true if a React node is visually empty (null, undefined, false, or empty Fragment). */
+function isEmptyNode(node: React.ReactNode): boolean {
+  if (!node) return true;
+  if (isValidElement(node) && node.type === Fragment && !(node.props as { children?: React.ReactNode }).children) return true;
+  return false;
+}
 
 export function ChatPage() {
   const { conversationId: urlConversationId } = useParams<{
@@ -54,7 +62,7 @@ export function ChatPage() {
     const filtered = copilotMessages.filter((m) => {
       if (m.role === "user") return true;
       if (m.role === "assistant") {
-        const hasContent = typeof m.content === "string" && m.content.length > 0;
+        const hasContent = typeof m.content === "string" && m.content.trim().length > 0;
         const hasGenerativeUI = "generativeUI" in m && typeof m.generativeUI === "function";
         return hasContent || hasGenerativeUI;
       }
@@ -93,13 +101,15 @@ export function ChatPage() {
       const currentConvId = useChatStore.getState().conversationId;
       if (currentConvId) {
         const assistantMsgs = copilotMessages.filter(
-          (m) => m.role === "assistant" && typeof m.content === "string" && m.content.length > 0,
+          (m) => m.role === "assistant" && typeof m.content === "string" && m.content.trim().length > 0,
         );
         const lastAssistant = assistantMsgs[assistantMsgs.length - 1];
         if (lastAssistant) {
+          const toolData = getPendingToolData();
           saveMessage(currentConvId, {
             role: "assistant",
             content: lastAssistant.content as string,
+            ...toolData,
           }).catch(() => {});
         }
       }
@@ -201,8 +211,15 @@ export function ChatPage() {
             const generativeUI =
               "generativeUI" in message &&
               typeof message.generativeUI === "function"
-                ? message.generativeUI
+                ? (message.generativeUI as () => React.ReactNode)
                 : null;
+
+            const renderedUI = generativeUI ? generativeUI() : undefined;
+
+            // Skip empty assistant bubbles (no text, no UI, no metadata)
+            if (role === "assistant" && !content.trim() && isEmptyNode(renderedUI) && !metadata) {
+              return null;
+            }
 
             return (
               <MessageBubble
@@ -211,7 +228,7 @@ export function ChatPage() {
                 content={content}
                 metadata={metadata}
               >
-                {generativeUI ? generativeUI() : undefined}
+                {renderedUI}
               </MessageBubble>
             );
           })}

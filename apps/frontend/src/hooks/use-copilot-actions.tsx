@@ -6,6 +6,21 @@ import { DataProfile, DataTable, InteractiveChart, SQLApproval, DataExplorer, Fo
 import type { DataTableColumn, PlotlyChartConfig, FollowUpSuggestion } from "@/components/generative-ui";
 import { BookmarkCard } from "@/components/generative-ui/bookmark-card";
 
+/** Accumulates structured tool results during the current agent turn. */
+let pendingToolData: Record<string, unknown> = {};
+
+/** Retrieve and clear the accumulated tool data for persistence. */
+export function getPendingToolData(): Record<string, unknown> {
+  const data = { ...pendingToolData };
+  pendingToolData = {};
+  return data;
+}
+
+/** Clear accumulated tool data without retrieving it. */
+export function clearPendingToolData(): void {
+  pendingToolData = {};
+}
+
 /**
  * Register the "render_data_profile" copilot action.
  *
@@ -62,10 +77,18 @@ export function useCopilotTableAction() {
         required: true,
       },
     ],
-    render: ({ args }) => {
+    render: ({ args, status }) => {
       const columnNames = args.columns as string[] | undefined;
       const rows = args.rows as unknown[][] | undefined;
       if (!columnNames || !rows) return <></>;
+
+      if (status === "complete") {
+        pendingToolData.query_result_summary = {
+          columns: columnNames,
+          rows: rows.slice(0, 50),
+          row_count: rows.length,
+        };
+      }
 
       const columns: DataTableColumn[] = columnNames.map((name) => ({ name }));
 
@@ -135,6 +158,11 @@ export function useCopilotChartAction() {
       const parsed = typeof result === "string" ? JSON.parse(result) : result;
       const chartConfig = parsed?.chart_config as PlotlyChartConfig | undefined;
       if (!chartConfig) return <></>;
+
+      pendingToolData.chart_config = {
+        ...chartConfig,
+        type: chartConfig.chart_type,
+      };
 
       return (
         <InteractiveChart

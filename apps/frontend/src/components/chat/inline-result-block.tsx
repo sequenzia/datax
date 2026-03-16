@@ -26,7 +26,15 @@ export function InlineResultBlock({ metadata }: InlineResultBlockProps) {
         rows?: unknown[][];
       }
     | undefined;
-  const chartConfig = metadata.chart_config as ChartConfig | undefined;
+  let chartConfig = metadata.chart_config as ChartConfig | undefined;
+
+  // Normalize backend's chart_type field to the type field ChartConfig expects
+  if (chartConfig && !chartConfig.type && (chartConfig as unknown as Record<string, unknown>).chart_type) {
+    chartConfig = {
+      ...chartConfig,
+      type: (chartConfig as unknown as Record<string, unknown>).chart_type as ChartConfig["type"],
+    };
+  }
 
   // Nothing to render
   if (!sql && !queryResult && !chartConfig) return null;

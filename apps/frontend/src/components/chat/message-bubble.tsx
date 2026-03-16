@@ -46,11 +46,10 @@ export function MessageBubble({
       {/* Message content */}
       <div
         className={cn(
-          "min-w-0 max-w-[85%] rounded-lg px-3 py-2 text-sm",
+          "min-w-0 rounded-lg px-3 py-2 text-sm",
           isUser
-            ? "bg-primary text-primary-foreground"
-            : "bg-muted text-foreground",
-          !isUser && "overflow-x-auto",
+            ? "max-w-[85%] bg-primary text-primary-foreground"
+            : "max-w-full bg-muted text-foreground overflow-x-auto",
         )}
       >
         {isUser ? (
