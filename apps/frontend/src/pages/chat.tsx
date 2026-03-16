@@ -47,11 +47,19 @@ export function ChatPage() {
 
   const isLoading = status === "loading" || copilotIsLoading;
 
-  // Use CopilotKit messages (with generativeUI) when available, fall back to Zustand messages (history)
+  // Use CopilotKit messages (with generativeUI) when available, fall back to Zustand messages (history).
+  // Filter out assistant messages that have neither text content nor a generativeUI render function —
+  // these are empty bubbles from internal tools (run_query, get_schema, etc.) that have no frontend UI.
   const displayMessages = useMemo(() => {
-    const filtered = copilotMessages.filter(
-      (m) => m.role === "user" || m.role === "assistant",
-    );
+    const filtered = copilotMessages.filter((m) => {
+      if (m.role === "user") return true;
+      if (m.role === "assistant") {
+        const hasContent = typeof m.content === "string" && m.content.length > 0;
+        const hasGenerativeUI = "generativeUI" in m && typeof m.generativeUI === "function";
+        return hasContent || hasGenerativeUI;
+      }
+      return false;
+    });
     return filtered.length > 0 ? filtered : messages;
   }, [copilotMessages, messages]);
 

@@ -177,6 +177,7 @@ class DataProfileResult(BaseModel):
     stage: str = "profile_ready"
     progress_stage: str = PROGRESS_BUILDING_VISUALIZATION
     table_name: str = ""
+    dataset_id: str = ""
     stats: list[dict[str, Any]] = Field(default_factory=list)
     sample_values: dict[str, list[Any]] = Field(default_factory=dict)
 
@@ -560,8 +561,26 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         stats = deps.duckdb_manager.summarize_table(table_name)
         samples = deps.duckdb_manager.get_sample_values(table_name, limit=5)
 
+        # Look up dataset_id from duckdb_table_name so the frontend
+        # DataProfile component can fetch the full profile via API.
+        dataset_id = ""
+        if deps.session_factory is not None:
+            from app.models.orm import Dataset as DatasetModel
+
+            session: Session = deps.session_factory()
+            try:
+                stmt = select(DatasetModel.id).where(
+                    DatasetModel.duckdb_table_name == table_name
+                )
+                row = session.execute(stmt).scalar_one_or_none()
+                if row is not None:
+                    dataset_id = str(row)
+            finally:
+                session.close()
+
         return DataProfileResult(
             table_name=table_name,
+            dataset_id=dataset_id,
             stats=stats,
             sample_values=samples,
         ).model_dump()

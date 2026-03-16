@@ -2,68 +2,57 @@
 
 import { useCallback } from "react";
 import { useCopilotAction, useCopilotChatInternal } from "@copilotkit/react-core";
-import { DataProfile, DataTable, InteractiveChart, SQLApproval, DataExplorer, FollowUpSuggestions } from "@/components/generative-ui";
+import { DataProfile, DataTable, InteractiveChart, SQLApproval, DataExplorer, FollowUpSuggestions, ChartSkeleton, ProfileSkeleton } from "@/components/generative-ui";
 import type { DataTableColumn, PlotlyChartConfig, FollowUpSuggestion } from "@/components/generative-ui";
 import { BookmarkCard } from "@/components/generative-ui/bookmark-card";
-import { useCreateBookmark } from "@/hooks/use-bookmarks";
 
 /**
- * Register the "showProfile" copilot action.
+ * Register the "render_data_profile" copilot action.
  *
- * When the AI agent invokes showProfile with a dataset_id (and optional
- * dataset_name), the DataProfile component is rendered inline in the chat.
+ * Matches the backend `render_data_profile` tool. The tool receives
+ * `table_name` as input; the result contains `dataset_id` for the
+ * DataProfile component.
  */
 export function useCopilotProfileAction() {
   useCopilotAction({
-    name: "showProfile",
+    name: "render_data_profile",
     description: "Display data profiling statistics for a dataset",
     available: "disabled",
     parameters: [
       {
-        name: "dataset_id",
+        name: "table_name",
         type: "string",
-        description: "The UUID of the dataset to profile",
+        description: "The DuckDB table name to profile",
         required: true,
       },
-      {
-        name: "dataset_name",
-        type: "string",
-        description: "The display name of the dataset",
-        required: false,
-      },
     ],
-    render: ({ args }) => {
-      const datasetId = args.dataset_id as string | undefined;
+    render: ({ status, result }) => {
+      if (status !== "complete") return <ProfileSkeleton />;
+      const parsed = typeof result === "string" ? JSON.parse(result) : result;
+      const datasetId = parsed?.dataset_id as string | undefined;
       if (!datasetId) return null;
-      return (
-        <DataProfile
-          datasetId={datasetId}
-          datasetName={args.dataset_name as string | undefined}
-        />
-      );
+      return <DataProfile datasetId={datasetId} />;
     },
   });
 }
 
 /**
- * Register the "showTable" copilot action.
+ * Register the "render_table" copilot action.
  *
- * When the AI agent invokes showTable with column definitions and data rows,
- * the DataTable component is rendered inline in the chat with sorting,
- * filtering, virtual scrolling, and column management.
+ * Matches the backend `render_table` tool. The tool receives `columns`
+ * (string[]) and `rows` (list of lists) as inputs. We convert the
+ * string column names into DataTableColumn objects for the component.
  */
 export function useCopilotTableAction() {
-  const createBookmarkMut = useCreateBookmark();
-
   useCopilotAction({
-    name: "showTable",
+    name: "render_table",
     description: "Display query results as an interactive data table",
     available: "disabled",
     parameters: [
       {
         name: "columns",
-        type: "object[]",
-        description: "Column definitions with name and optional type",
+        type: "string[]",
+        description: "Column names from the query result",
         required: true,
       },
       {
@@ -72,43 +61,18 @@ export function useCopilotTableAction() {
         description: "Row data as arrays of values",
         required: true,
       },
-      {
-        name: "title",
-        type: "string",
-        description: "Optional title for the table",
-        required: false,
-      },
-      {
-        name: "message_id",
-        type: "string",
-        description: "UUID of the message containing this table",
-        required: false,
-      },
     ],
     render: ({ args }) => {
-      const columns = args.columns as DataTableColumn[] | undefined;
+      const columnNames = args.columns as string[] | undefined;
       const rows = args.rows as unknown[][] | undefined;
-      const messageId = args.message_id as string | undefined;
-      if (!columns || !rows) return <></>;
+      if (!columnNames || !rows) return <></>;
 
-      const handlePin = messageId
-        ? () => {
-            const title =
-              (args.title as string) || "Data Table Bookmark";
-            createBookmarkMut.mutate({
-              message_id: messageId,
-              title,
-            });
-          }
-        : undefined;
+      const columns: DataTableColumn[] = columnNames.map((name) => ({ name }));
 
       return (
         <DataTable
           columns={columns}
           rows={rows}
-          title={args.title as string | undefined}
-          onPin={handlePin}
-          isPinned={createBookmarkMut.isSuccess}
         />
       );
     },
@@ -116,30 +80,20 @@ export function useCopilotTableAction() {
 }
 
 /**
- * Register the "showChart" copilot action.
+ * Register the "render_chart" copilot action.
  *
- * When the AI agent invokes render_chart, the backend returns a PlotlyConfig
- * (data + layout + chart_type). This action receives that configuration along
- * with the raw column/row data and renders the InteractiveChart component
- * inline in the chat. The user can then switch chart types, swap axes, and
- * export -- all client-side without triggering another AI call.
+ * Matches the backend `render_chart` tool. The tool receives `columns`,
+ * `rows`, `title`, `chart_type_override`, and `query_context` as inputs.
+ * The chart_config and reasoning are in the tool's RESULT, not inputs.
+ * We show a ChartSkeleton until the tool completes.
  */
 export function useCopilotChartAction() {
-  const createBookmarkMut = useCreateBookmark();
-
   useCopilotAction({
-    name: "showChart",
+    name: "render_chart",
     description:
       "Display an interactive Plotly chart with editing controls for chart type switching and axis assignment",
     available: "disabled",
     parameters: [
-      {
-        name: "chart_config",
-        type: "object",
-        description:
-          "Plotly chart configuration with data traces, layout, chart_type, and is_fallback flag",
-        required: true,
-      },
       {
         name: "columns",
         type: "string[]",
@@ -159,36 +113,28 @@ export function useCopilotChartAction() {
         required: false,
       },
       {
-        name: "reasoning",
+        name: "chart_type_override",
         type: "string",
-        description: "AI reasoning for the chart type selection",
+        description: "Optional chart type to force",
         required: false,
       },
       {
-        name: "message_id",
+        name: "query_context",
         type: "string",
-        description: "UUID of the message containing this chart",
+        description: "Optional description of what the data represents",
         required: false,
       },
     ],
-    render: ({ args, status }) => {
-      const chartConfig = args.chart_config as PlotlyChartConfig | undefined;
+    render: ({ args, status, result }) => {
       const columns = args.columns as string[] | undefined;
       const rows = args.rows as unknown[][] | undefined;
-      const messageId = args.message_id as string | undefined;
 
-      if (!chartConfig || !columns || !rows) return <></>;
+      if (!columns || !rows) return <></>;
+      if (status !== "complete") return <ChartSkeleton />;
 
-      const handlePin = messageId
-        ? () => {
-            const title =
-              (args.title as string) || "Chart Bookmark";
-            createBookmarkMut.mutate({
-              message_id: messageId,
-              title,
-            });
-          }
-        : undefined;
+      const parsed = typeof result === "string" ? JSON.parse(result) : result;
+      const chartConfig = parsed?.chart_config as PlotlyChartConfig | undefined;
+      if (!chartConfig) return <></>;
 
       return (
         <InteractiveChart
@@ -196,10 +142,8 @@ export function useCopilotChartAction() {
           columns={columns}
           rows={rows}
           title={args.title as string | undefined}
-          reasoning={args.reasoning as string | undefined}
-          isLoading={status === "inProgress"}
-          onPin={handlePin}
-          isPinned={createBookmarkMut.isSuccess}
+          reasoning={parsed?.reasoning as string | undefined}
+          isLoading={false}
         />
       );
     },
@@ -281,13 +225,11 @@ export function useCopilotExploreAction() {
 }
 
 /**
- * Register the "suggestFollowups" copilot action.
+ * Register the "suggest_followups" copilot action.
  *
- * When the AI agent invokes suggest_followups after detecting interesting
- * patterns in query results, the FollowUpSuggestions component is rendered
- * inline in the chat with 2-3 clickable suggestion chips. Each chip
- * includes the suggested question text and a brief rationale. Clicking a
- * chip sends it as a new message to the AI.
+ * Matches the backend `suggest_followups` tool. The tool receives query
+ * context as inputs; the actual suggestions array is in the tool's RESULT.
+ * We return null until the tool completes and the result is available.
  */
 export function useCopilotFollowupsAction() {
   const { sendMessage } = useCopilotChatInternal();
@@ -304,21 +246,40 @@ export function useCopilotFollowupsAction() {
   );
 
   useCopilotAction({
-    name: "suggestFollowups",
+    name: "suggest_followups",
     description:
       "Display contextual follow-up suggestion chips when interesting patterns are detected in query results",
     available: "disabled",
     parameters: [
       {
-        name: "suggestions",
-        type: "object[]",
-        description:
-          "Array of 2-3 follow-up suggestions, each with question and reasoning fields",
+        name: "current_query",
+        type: "string",
+        description: "The SQL query that produced the current results",
         required: true,
       },
+      {
+        name: "columns",
+        type: "string[]",
+        description: "Column names from the current result",
+        required: true,
+      },
+      {
+        name: "row_count",
+        type: "number",
+        description: "Number of rows in the current result",
+        required: true,
+      },
+      {
+        name: "chart_type",
+        type: "string",
+        description: "The chart type used to visualize the current result",
+        required: false,
+      },
     ],
-    render: ({ args }) => {
-      const suggestions = args.suggestions as FollowUpSuggestion[] | undefined;
+    render: ({ status, result }) => {
+      if (status !== "complete") return null;
+      const parsed = typeof result === "string" ? JSON.parse(result) : result;
+      const suggestions = parsed?.suggestions as FollowUpSuggestion[] | undefined;
       if (!suggestions || suggestions.length === 0) return null;
       return (
         <FollowUpSuggestions
