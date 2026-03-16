@@ -28,3 +28,9 @@ export type {
 } from "./follow-up-suggestions";
 export { BookmarkCard } from "./bookmark-card";
 export type { BookmarkCardProps } from "./bookmark-card";
+export { PinToDashboardDialog } from "./pin-to-dashboard-dialog";
+export type { PinToDashboardDialogProps } from "./pin-to-dashboard-dialog";
+export { PinnableChart } from "./pinnable-chart";
+export type { PinnableChartProps } from "./pinnable-chart";
+export { PinnableTable } from "./pinnable-table";
+export type { PinnableTableProps } from "./pinnable-table";

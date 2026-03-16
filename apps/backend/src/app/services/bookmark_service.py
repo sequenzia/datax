@@ -73,6 +73,38 @@ class BookmarkService:
 
         return self._to_dict(bookmark)
 
+    def create_bookmark_direct(
+        self,
+        title: str,
+        sql: str | None = None,
+        chart_config: dict[str, Any] | None = None,
+        result_snapshot: dict[str, Any] | None = None,
+        source_id: str | None = None,
+        source_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a bookmark with directly provided data (no message required).
+
+        Used for mid-turn pinning where the message hasn't been persisted yet.
+        """
+        bookmark = Bookmark(
+            title=title,
+            sql=sql,
+            chart_config=chart_config,
+            result_snapshot=result_snapshot,
+            source_id=source_id,
+            source_type=source_type,
+        )
+        self.session.add(bookmark)
+        self.session.flush()
+
+        logger.info(
+            "bookmark_created_direct",
+            bookmark_id=str(bookmark.id),
+            title=title,
+        )
+
+        return self._to_dict(bookmark)
+
     def get_bookmark(self, bookmark_id: uuid.UUID) -> dict[str, Any] | None:
         """Get a single bookmark by ID. Returns None if not found."""
         bookmark = self.session.get(Bookmark, bookmark_id)
@@ -116,7 +148,7 @@ class BookmarkService:
         """Convert a Bookmark ORM instance to a response dict."""
         return {
             "id": str(bookmark.id),
-            "message_id": str(bookmark.message_id),
+            "message_id": str(bookmark.message_id) if bookmark.message_id else None,
             "title": bookmark.title,
             "sql": bookmark.sql,
             "chart_config": bookmark.chart_config,

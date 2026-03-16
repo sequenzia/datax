@@ -1,14 +1,18 @@
 """Bookmark REST API endpoints.
 
 Provides CRUD endpoints for managing bookmarks (saved insights).
+Supports two creation modes:
+  1. From a message_id (copies data from the persisted message)
+  2. Direct data (SQL, chart_config, etc.) for mid-turn pinning
 """
 
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_db
@@ -22,12 +26,32 @@ router = APIRouter(prefix="/bookmarks", tags=["bookmarks"])
 
 
 class CreateBookmarkRequest(BaseModel):
-    """Request body for creating a bookmark."""
+    """Request body for creating a bookmark.
 
-    message_id: str = Field(..., description="UUID of the message to bookmark")
+    Supports two modes:
+    - message_id mode: copies data from a persisted message
+    - direct mode: accepts sql/chart_config/result_snapshot directly
+    """
+
+    message_id: str | None = Field(None, description="UUID of the message to bookmark")
     title: str = Field(
         ..., min_length=1, max_length=255, description="Bookmark title"
     )
+    sql: str | None = Field(None, description="SQL query for direct-data bookmarks")
+    chart_config: dict[str, Any] | None = Field(None, description="Plotly chart config")
+    result_snapshot: dict[str, Any] | None = Field(None, description="Query result snapshot")
+    source_id: str | None = Field(None, description="UUID of the data source")
+    source_type: str | None = Field(None, description="Source type: dataset or connection")
+
+    @model_validator(mode="after")
+    def require_message_or_data(self) -> CreateBookmarkRequest:
+        has_message = self.message_id is not None
+        has_data = any([self.sql, self.source_id])
+        if not has_message and not has_data:
+            raise ValueError(
+                "Either message_id or at least one data field (sql, source_id) is required"
+            )
+        return self
 
 
 @router.get("")
@@ -43,31 +67,42 @@ def create_bookmark(
     body: CreateBookmarkRequest,
     db: Session = Depends(get_db),
 ) -> dict:
-    """Create a bookmark from a chat message.
+    """Create a bookmark from a message or from direct data.
 
-    Copies SQL, chart_config, and result snapshot from the message
-    into a new bookmark record.
+    When message_id is provided, copies SQL, chart_config, and result
+    snapshot from the message. Otherwise, uses the directly provided fields.
     """
-    try:
-        message_uuid = UUID(body.message_id)
-    except ValueError:
-        raise AppError(
-            code="INVALID_UUID",
-            message=f"Invalid message_id format: {body.message_id}",
-            status_code=400,
-        )
-
     service = BookmarkService(db)
-    try:
-        bookmark = service.create_bookmark(
-            message_id=message_uuid,
+
+    if body.message_id is not None:
+        try:
+            message_uuid = UUID(body.message_id)
+        except ValueError:
+            raise AppError(
+                code="INVALID_UUID",
+                message=f"Invalid message_id format: {body.message_id}",
+                status_code=400,
+            )
+
+        try:
+            bookmark = service.create_bookmark(
+                message_id=message_uuid,
+                title=body.title,
+            )
+        except ValueError as exc:
+            raise AppError(
+                code="NOT_FOUND",
+                message=str(exc),
+                status_code=404,
+            )
+    else:
+        bookmark = service.create_bookmark_direct(
             title=body.title,
-        )
-    except ValueError as exc:
-        raise AppError(
-            code="NOT_FOUND",
-            message=str(exc),
-            status_code=404,
+            sql=body.sql,
+            chart_config=body.chart_config,
+            result_snapshot=body.result_snapshot,
+            source_id=body.source_id,
+            source_type=body.source_type,
         )
 
     return bookmark

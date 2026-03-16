@@ -2,8 +2,10 @@
 
 import { useCallback } from "react";
 import { useCopilotAction, useCopilotChatInternal } from "@copilotkit/react-core";
-import { DataProfile, DataTable, InteractiveChart, SQLApproval, DataExplorer, FollowUpSuggestions, ChartSkeleton, ProfileSkeleton } from "@/components/generative-ui";
+import { DataProfile, SQLApproval, DataExplorer, FollowUpSuggestions, ChartSkeleton, ProfileSkeleton } from "@/components/generative-ui";
 import type { DataTableColumn, PlotlyChartConfig, FollowUpSuggestion } from "@/components/generative-ui";
+import { PinnableChart } from "@/components/generative-ui/pinnable-chart";
+import { PinnableTable } from "@/components/generative-ui/pinnable-table";
 import { BookmarkCard } from "@/components/generative-ui/bookmark-card";
 
 /** Accumulates structured tool results during the current agent turn. */
@@ -57,6 +59,7 @@ export function useCopilotProfileAction() {
  * Matches the backend `render_table` tool. The tool receives `columns`
  * (string[]) and `rows` (list of lists) as inputs. We convert the
  * string column names into DataTableColumn objects for the component.
+ * Renders PinnableTable to support the Pin-to-Dashboard flow.
  */
 export function useCopilotTableAction() {
   useCopilotAction({
@@ -76,13 +79,41 @@ export function useCopilotTableAction() {
         description: "Row data as arrays of values",
         required: true,
       },
+      {
+        name: "sql",
+        type: "string",
+        description: "The SQL query that produced the data",
+        required: false,
+      },
+      {
+        name: "source_id",
+        type: "string",
+        description: "UUID of the data source",
+        required: false,
+      },
+      {
+        name: "source_type",
+        type: "string",
+        description: "Source type: dataset or connection",
+        required: false,
+      },
     ],
-    render: ({ args, status }) => {
+    render: ({ args, status, result }) => {
       const columnNames = args.columns as string[] | undefined;
       const rows = args.rows as unknown[][] | undefined;
       if (!columnNames || !rows) return <></>;
 
+      // Extract source info from tool result (backend includes them)
+      let sql = args.sql as string | undefined;
+      let sourceId = args.source_id as string | undefined;
+      let sourceType = args.source_type as string | undefined;
+
       if (status === "complete") {
+        const parsed = typeof result === "string" ? JSON.parse(result) : result;
+        sql = sql ?? (parsed?.sql as string | undefined);
+        sourceId = sourceId ?? (parsed?.source_id as string | undefined);
+        sourceType = sourceType ?? (parsed?.source_type as string | undefined);
+
         pendingToolData.query_result_summary = {
           columns: columnNames,
           rows: rows.slice(0, 50),
@@ -93,9 +124,12 @@ export function useCopilotTableAction() {
       const columns: DataTableColumn[] = columnNames.map((name) => ({ name }));
 
       return (
-        <DataTable
+        <PinnableTable
           columns={columns}
           rows={rows}
+          sql={sql}
+          sourceId={sourceId}
+          sourceType={sourceType}
         />
       );
     },
@@ -108,7 +142,7 @@ export function useCopilotTableAction() {
  * Matches the backend `render_chart` tool. The tool receives `columns`,
  * `rows`, `title`, `chart_type_override`, and `query_context` as inputs.
  * The chart_config and reasoning are in the tool's RESULT, not inputs.
- * We show a ChartSkeleton until the tool completes.
+ * Renders PinnableChart to support the Pin-to-Dashboard flow.
  */
 export function useCopilotChartAction() {
   useCopilotAction({
@@ -147,6 +181,24 @@ export function useCopilotChartAction() {
         description: "Optional description of what the data represents",
         required: false,
       },
+      {
+        name: "sql",
+        type: "string",
+        description: "The SQL query that produced the data",
+        required: false,
+      },
+      {
+        name: "source_id",
+        type: "string",
+        description: "UUID of the data source",
+        required: false,
+      },
+      {
+        name: "source_type",
+        type: "string",
+        description: "Source type: dataset or connection",
+        required: false,
+      },
     ],
     render: ({ args, status, result }) => {
       const columns = args.columns as string[] | undefined;
@@ -159,19 +211,27 @@ export function useCopilotChartAction() {
       const chartConfig = parsed?.chart_config as PlotlyChartConfig | undefined;
       if (!chartConfig) return <></>;
 
+      // Resolve source info: prefer args (tool params), fall back to result
+      const sql = (args.sql as string | undefined) ?? (parsed?.sql as string | undefined);
+      const sourceId = (args.source_id as string | undefined) ?? (parsed?.source_id as string | undefined);
+      const sourceType = (args.source_type as string | undefined) ?? (parsed?.source_type as string | undefined);
+
       pendingToolData.chart_config = {
         ...chartConfig,
         type: chartConfig.chart_type,
       };
 
       return (
-        <InteractiveChart
+        <PinnableChart
           chartConfig={chartConfig}
           columns={columns}
           rows={rows}
           title={args.title as string | undefined}
           reasoning={parsed?.reasoning as string | undefined}
           isLoading={false}
+          sql={sql}
+          sourceId={sourceId}
+          sourceType={sourceType}
         />
       );
     },

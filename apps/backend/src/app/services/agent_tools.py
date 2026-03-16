@@ -159,6 +159,9 @@ class ChartResult(BaseModel):
     chart_config: dict[str, Any] = Field(default_factory=dict)
     chart_type: str = ""
     reasoning: str = ""
+    sql: str | None = None
+    source_id: str | None = None
+    source_type: str | None = None
 
 
 class TableResult(BaseModel):
@@ -169,6 +172,9 @@ class TableResult(BaseModel):
     columns: list[str] = Field(default_factory=list)
     rows: list[list[Any]] = Field(default_factory=list)
     row_count: int = 0
+    sql: str | None = None
+    source_id: str | None = None
+    source_type: str | None = None
 
 
 class DataProfileResult(BaseModel):
@@ -467,6 +473,9 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         title: str | None = None,
         chart_type_override: str | None = None,
         query_context: str | None = None,
+        sql: str | None = None,
+        source_id: str | None = None,
+        source_type: str | None = None,
     ) -> dict[str, Any]:
         """Generate a Plotly chart configuration for the given query results.
 
@@ -480,6 +489,9 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
             chart_type_override: Optional chart type to force
                 (line, bar, pie, scatter, histogram, kpi).
             query_context: Optional description of what the data represents.
+            sql: The SQL query that produced the data (for bookmarking).
+            source_id: UUID of the data source (for bookmarking).
+            source_type: Type of source - 'dataset' or 'connection' (for bookmarking).
 
         Returns:
             Plotly chart configuration with data traces and layout,
@@ -507,6 +519,9 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
             chart_config=config.to_dict(),
             chart_type=config.chart_type,
             reasoning=recommendation.reasoning,
+            sql=sql,
+            source_id=source_id,
+            source_type=source_type,
         ).model_dump()
 
     @agent.tool
@@ -514,12 +529,18 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         ctx: RunContext[AgentDeps],
         columns: list[str],
         rows: list[list[JsonScalar]],
+        sql: str | None = None,
+        source_id: str | None = None,
+        source_type: str | None = None,
     ) -> dict[str, Any]:
         """Signal to render query results as an interactive DataTable component.
 
         Args:
             columns: Column names from the query result.
             rows: Row data from the query result (list of lists).
+            sql: The SQL query that produced the data (for bookmarking).
+            source_id: UUID of the data source (for bookmarking).
+            source_type: Type of source - 'dataset' or 'connection' (for bookmarking).
 
         Returns:
             Table configuration with columns, rows, and row count for
@@ -531,6 +552,9 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
             columns=columns,
             rows=rows,
             row_count=len(rows),
+            sql=sql,
+            source_id=source_id,
+            source_type=source_type,
         ).model_dump()
 
     @agent.tool
@@ -710,21 +734,15 @@ def register_tools(agent: Agent[AgentDeps, str]) -> None:
         if deps.session_factory is None:
             return {"stage": "bookmark_error", "error": "Database session not available"}
 
-        if not message_id:
-            return {
-                "stage": "bookmark_error",
-                "error": "message_id is required to create a bookmark",
-            }
-
-        try:
-            msg_uuid = uuid.UUID(message_id)
-        except ValueError:
-            return {"stage": "bookmark_error", "error": f"Invalid message_id: {message_id}"}
+        msg_uuid = None
+        if message_id:
+            try:
+                msg_uuid = uuid.UUID(message_id)
+            except ValueError:
+                return {"stage": "bookmark_error", "error": f"Invalid message_id: {message_id}"}
 
         session: Session = deps.session_factory()
         try:
-            # The agent tool creates bookmarks directly with all provided fields
-            # (not via the service's create_bookmark which copies from the message)
             bookmark = Bookmark(
                 message_id=msg_uuid,
                 title=title,

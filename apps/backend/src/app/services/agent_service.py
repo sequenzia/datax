@@ -95,7 +95,9 @@ query results. Chart type is auto-selected or overridable.
 Workflow for answering data questions:
 1. Identify the relevant data source from the schema context.
 2. Generate SQL using run_query with source_id and source_type.
-3. After results, use render_chart and render_table to display.
+3. After results, use render_chart and render_table to display. \
+When calling render_chart or render_table, always include the sql, \
+source_id, and source_type from the run_query call that produced the data.
 4. Explain the results in natural language.
 5. Use suggest_followups to offer next exploration steps.
 

@@ -237,7 +237,7 @@ export interface SchemaResponse {
 
 export interface Bookmark {
   id: string;
-  message_id: string;
+  message_id: string | null;
   title: string;
   sql: string | null;
   chart_config: Record<string, unknown> | null;
@@ -252,8 +252,13 @@ export interface BookmarkListResponse {
 }
 
 export interface CreateBookmarkRequest {
-  message_id: string;
+  message_id?: string;
   title: string;
+  sql?: string;
+  chart_config?: Record<string, unknown>;
+  result_snapshot?: Record<string, unknown>;
+  source_id?: string;
+  source_type?: string;
 }
 
 export interface DashboardItem {

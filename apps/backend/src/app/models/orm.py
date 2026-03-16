@@ -196,8 +196,8 @@ class Bookmark(CreatedAtMixin, Base):
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid, primary_key=True, default=generate_uuid
     )
-    message_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("messages.id", ondelete="CASCADE"), nullable=False
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("messages.id", ondelete="SET NULL"), nullable=True
     )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     sql: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -208,7 +208,7 @@ class Bookmark(CreatedAtMixin, Base):
     user_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
 
     # Relationships
-    message: Mapped["Message"] = relationship("Message", back_populates="bookmark")
+    message: Mapped["Message | None"] = relationship("Message", back_populates="bookmark")
     dashboard_items: Mapped[list["DashboardItem"]] = relationship(
         "DashboardItem",
         back_populates="bookmark",
